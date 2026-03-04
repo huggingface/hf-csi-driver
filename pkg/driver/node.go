@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,7 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	if !mounted {
 		klog.V(4).Infof("Target %s is not mounted, cleaning up directory", target)
 		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			klog.Warningf("Failed to remove target directory %s: %v", target, err)
+			return nil, status.Errorf(codes.Internal, "failed to remove target directory %s: %v", target, err)
 		}
 		return &csi.NodeUnpublishVolumeResponse{}, nil
 	}
@@ -190,9 +191,9 @@ func getWithDefault(m map[string]string, key, defaultVal string) string {
 	return defaultVal
 }
 
-// sanitizeVolumeID replaces path separators to prevent directory traversal.
+// sanitizeVolumeID encodes unsafe characters to prevent directory traversal and collisions.
 func sanitizeVolumeID(id string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(id, "/", "_"), "..", "__")
+	return url.PathEscape(id)
 }
 
 // allowedMountFlags lists mount flags that can be passed through to hf-mount-fuse.

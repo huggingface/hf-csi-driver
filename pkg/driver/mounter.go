@@ -49,31 +49,19 @@ type mountInfo struct {
 type ProcessMounter struct {
 	mu      sync.Mutex
 	mounts  map[string]*mountInfo
-	locks   map[string]*sync.Mutex
 	checker mount.Interface
 }
 
 func NewProcessMounter() *ProcessMounter {
 	return &ProcessMounter{
 		mounts:  make(map[string]*mountInfo),
-		locks:   make(map[string]*sync.Mutex),
 		checker: mount.New(""),
 	}
 }
 
-func (m *ProcessMounter) targetLock(target string) *sync.Mutex {
+func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.locks[target]; !ok {
-		m.locks[target] = &sync.Mutex{}
-	}
-	return m.locks[target]
-}
-
-func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
-	lock := m.targetLock(target)
-	lock.Lock()
-	defer lock.Unlock()
 
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
@@ -106,28 +94,27 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		}
 		m.mu.Lock()
 		delete(m.mounts, target)
-		delete(m.locks, target)
 		m.mu.Unlock()
 	}()
 
-	m.mu.Lock()
 	m.mounts[target] = info
-	m.mu.Unlock()
 
-	// Wait for mount point to become ready.
-	if err := m.waitForMount(target); err != nil {
+	// Temporarily release lock while waiting for mount to become ready.
+	m.mu.Unlock()
+	mountErr := m.waitForMount(target, done)
+	m.mu.Lock()
+
+	if mountErr != nil {
 		_ = m.killProcess(info)
-		m.mu.Lock()
 		delete(m.mounts, target)
-		m.mu.Unlock()
-		return fmt.Errorf("mount point %s did not become ready: %w", target, err)
+		return fmt.Errorf("mount point %s did not become ready: %w", target, mountErr)
 	}
 
 	klog.Infof("Successfully mounted %s %s at %s", sourceType, sourceID, target)
 	return nil
 }
 
-func (m *ProcessMounter) waitForMount(target string) error {
+func (m *ProcessMounter) waitForMount(target string, processDone <-chan struct{}) error {
 	deadline := time.After(mountTimeout)
 	ticker := time.NewTicker(mountReadyPoll)
 	defer ticker.Stop()
@@ -136,6 +123,8 @@ func (m *ProcessMounter) waitForMount(target string) error {
 		select {
 		case <-deadline:
 			return fmt.Errorf("timeout waiting for mount")
+		case <-processDone:
+			return fmt.Errorf("mount process exited before mount became ready")
 		case <-ticker.C:
 			mounted, err := m.checker.IsMountPoint(target)
 			if err == nil && mounted {
@@ -148,16 +137,15 @@ func (m *ProcessMounter) waitForMount(target string) error {
 func (m *ProcessMounter) Unmount(target string) error {
 	m.mu.Lock()
 	info, tracked := m.mounts[target]
+	if tracked {
+		delete(m.mounts, target)
+	}
 	m.mu.Unlock()
 
 	if tracked {
 		if err := m.killProcess(info); err != nil {
 			klog.Warningf("Failed to stop process for %s: %v", target, err)
 		}
-		m.mu.Lock()
-		delete(m.mounts, target)
-		delete(m.locks, target)
-		m.mu.Unlock()
 	}
 
 	// Always try fusermount3 as fallback (handles stale mounts from previous DaemonSet).

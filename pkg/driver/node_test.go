@@ -205,9 +205,10 @@ func TestSanitizeVolumeID(t *testing.T) {
 		expected string
 	}{
 		{"my-volume", "my-volume"},
-		{"user/bucket", "user_bucket"},
-		{"../../../etc/passwd", "_________etc_passwd"},
-		{"/absolute/path", "_absolute_path"},
+		{"user/bucket", "user%2Fbucket"},
+		{"../../../etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd"},
+		{"/absolute/path", "%2Fabsolute%2Fpath"},
+		{"a_b", "a_b"},
 	}
 	for _, tt := range tests {
 		got := sanitizeVolumeID(tt.input)
