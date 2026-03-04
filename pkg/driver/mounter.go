@@ -102,7 +102,6 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		// Close done FIRST so killProcess (which waits on done under tl) can
 		// complete and release tl before we try to acquire it.
 		close(done)
-		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, waitErr)
 
 		// Acquire the per-target lock to serialize with Mount/Unmount and
 		// atomically check ownership + cleanup without TOCTOU races.
@@ -119,10 +118,15 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		m.mu.Unlock()
 
 		if isOwner {
+			// Unexpected crash: log as warning and clean up FUSE mount.
+			klog.Warningf("%s for %s crashed: %v", hfMountBinary, target, waitErr)
 			out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
 			if umountErr != nil {
 				klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
 			}
+		} else {
+			// Expected exit (Unmount already cleaned up).
+			klog.V(4).Infof("%s for %s exited: %v", hfMountBinary, target, waitErr)
 		}
 	}()
 
@@ -154,15 +158,23 @@ func (m *ProcessMounter) waitForMount(target string, processDone <-chan struct{}
 	ticker := time.NewTicker(mountReadyPoll)
 	defer ticker.Stop()
 
+	var lastErr error
 	for {
 		select {
 		case <-deadline:
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for mount: %w", lastErr)
+			}
 			return fmt.Errorf("timeout waiting for mount")
 		case <-processDone:
 			return fmt.Errorf("mount process exited before mount became ready")
 		case <-ticker.C:
 			mounted, err := m.checker.IsMountPoint(target)
-			if err == nil && mounted {
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if mounted {
 				return nil
 			}
 		}

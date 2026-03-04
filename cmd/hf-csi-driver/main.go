@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
+	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
 )
 
@@ -46,6 +47,12 @@ func main() {
 	}()
 
 	if err := drv.Run(); err != nil {
-		klog.Fatalf("Failed to run driver: %v", err)
+		// GracefulStop causes Serve to return grpc.ErrServerStopped,
+		// which is a normal shutdown, not a fatal error.
+		if err == grpc.ErrServerStopped {
+			klog.Info("gRPC server stopped")
+		} else {
+			klog.Fatalf("Failed to run driver: %v", err)
+		}
 	}
 }
