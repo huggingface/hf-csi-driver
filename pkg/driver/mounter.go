@@ -98,8 +98,10 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	// Start crash detection goroutine immediately so done channel is always serviced.
 	go func() {
-		defer close(done)
 		waitErr := cmd.Wait()
+		// Close done FIRST so killProcess (which waits on done under tl) can
+		// complete and release tl before we try to acquire it.
+		close(done)
 		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, waitErr)
 
 		// Acquire the per-target lock to serialize with Mount/Unmount and
