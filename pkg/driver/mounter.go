@@ -354,6 +354,10 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 		globalArgs = append(globalArgs, "--read-only")
 	}
 
+	// ExtraArgs are global flags (--uid, --gid, etc.) that clap expects
+	// before the subcommand.
+	globalArgs = append(globalArgs, opts.ExtraArgs...)
+
 	// Subcommand + positional args.
 	args := append(globalArgs, sourceType, sourceID, target)
 
@@ -361,7 +365,6 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	if sourceType == "repo" && opts.Revision != "" {
 		args = append(args, "--revision", opts.Revision)
 	}
-	args = append(args, opts.ExtraArgs...)
 
 	return args, nil
 }

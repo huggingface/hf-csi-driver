@@ -19,8 +19,8 @@ func TestBuildArgs_Bucket(t *testing.T) {
 		"--hub-endpoint", "https://huggingface.co",
 		"--cache-dir", "/cache/vol1",
 		"--read-only",
-		"bucket", "user/my-bucket", "/mnt/target",
 		"--uid", "1000", "--gid", "1000",
+		"bucket", "user/my-bucket", "/mnt/target",
 	}
 
 	if len(args) != len(expected) {
