@@ -49,22 +49,36 @@ type mountInfo struct {
 type ProcessMounter struct {
 	mu      sync.Mutex
 	mounts  map[string]*mountInfo
+	locks   map[string]*sync.Mutex
 	checker mount.Interface
 }
 
 func NewProcessMounter() *ProcessMounter {
 	return &ProcessMounter{
 		mounts:  make(map[string]*mountInfo),
+		locks:   make(map[string]*sync.Mutex),
 		checker: mount.New(""),
 	}
 }
 
-func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
+// targetLock returns a per-target mutex. These are never deleted to avoid
+// races between the crash goroutine and concurrent Mount/Unmount calls.
+func (m *ProcessMounter) targetLock(target string) *sync.Mutex {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.locks[target]; !ok {
+		m.locks[target] = &sync.Mutex{}
+	}
+	return m.locks[target]
+}
+
+func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
+	tl := m.targetLock(target)
+	tl.Lock()
+	defer tl.Unlock()
 
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
-		m.mu.Unlock()
 		return err
 	}
 
@@ -76,7 +90,6 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	klog.Infof("Starting %s %s", hfMountBinary, strings.Join(args, " "))
 	if err := cmd.Start(); err != nil {
-		m.mu.Unlock()
 		return fmt.Errorf("failed to start %s: %w", hfMountBinary, err)
 	}
 
@@ -89,7 +102,12 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		waitErr := cmd.Wait()
 		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, waitErr)
 
-		// Only clean up if this mountInfo is still the active one for this target.
+		// Acquire the per-target lock to serialize with Mount/Unmount and
+		// atomically check ownership + cleanup without TOCTOU races.
+		tl := m.targetLock(target)
+		tl.Lock()
+		defer tl.Unlock()
+
 		m.mu.Lock()
 		current, exists := m.mounts[target]
 		isOwner := exists && current == info
@@ -106,14 +124,16 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		}
 	}()
 
+	m.mu.Lock()
 	m.mounts[target] = info
 	m.mu.Unlock()
 
-	// Wait for mount point to become ready (lock not held).
+	// Wait for mount point to become ready (per-target lock still held,
+	// preventing concurrent mount attempts on the same target).
 	mountErr := m.waitForMount(target, done)
 
 	if mountErr != nil {
-		// Kill process without holding m.mu to avoid deadlock with the crash goroutine.
+		// killProcess does not need m.mu, only waits on done channel.
 		_ = m.killProcess(info)
 		m.mu.Lock()
 		if m.mounts[target] == info {
@@ -148,6 +168,10 @@ func (m *ProcessMounter) waitForMount(target string, processDone <-chan struct{}
 }
 
 func (m *ProcessMounter) Unmount(target string) error {
+	tl := m.targetLock(target)
+	tl.Lock()
+	defer tl.Unlock()
+
 	m.mu.Lock()
 	info, tracked := m.mounts[target]
 	if tracked {
@@ -177,6 +201,9 @@ func (m *ProcessMounter) IsMountPoint(target string) (bool, error) {
 	return m.checker.IsMountPoint(target)
 }
 
+// killProcess sends SIGTERM then SIGKILL to the process group.
+// Must NOT be called while holding m.mu (it waits on info.done which the
+// crash goroutine closes after acquiring m.mu).
 func (m *ProcessMounter) killProcess(info *mountInfo) error {
 	if info.cmd.Process == nil {
 		return nil
