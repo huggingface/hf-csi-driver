@@ -27,7 +27,7 @@ func (m *mockMounter) Mount(sourceType, sourceID, target string, opts MountOptio
 
 func (m *mockMounter) Unmount(target string) error {
 	delete(m.mounted, target)
-	os.Remove(target)
+	_ = os.Remove(target)
 	return nil
 }
 
@@ -224,7 +224,7 @@ func TestNodeUnpublishVolume_Success(t *testing.T) {
 	d := &Driver{mounter: mock}
 
 	target := filepath.Join(t.TempDir(), "target")
-	os.MkdirAll(target, 0750)
+	_ = os.MkdirAll(target, 0750)
 	mock.mounted[target] = true
 
 	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
