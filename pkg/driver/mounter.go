@@ -28,10 +28,7 @@ type MountOptions struct {
 	PollIntervalSecs string
 	MetadataTtlMs    string
 	ReadOnly         bool
-	AdvancedWrites   bool
-	UID              string
-	GID              string
-	ExtraArgs        []string
+	ExtraArgs        []string // passthrough flags from PV mountOptions
 	HFToken          string
 }
 
@@ -321,15 +318,6 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 	if opts.ReadOnly {
 		globalArgs = append(globalArgs, "--read-only")
-	}
-	if opts.AdvancedWrites {
-		globalArgs = append(globalArgs, "--advanced-writes")
-	}
-	if opts.UID != "" {
-		globalArgs = append(globalArgs, "--uid", opts.UID)
-	}
-	if opts.GID != "" {
-		globalArgs = append(globalArgs, "--gid", opts.GID)
 	}
 
 	// Subcommand + positional args.

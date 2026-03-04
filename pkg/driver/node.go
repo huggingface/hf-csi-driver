@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -92,22 +91,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		HFToken:          req.GetSecrets()["token"],
 	}
 
-	// Parse mount flags from PV mountOptions.
+	// Pass mount flags straight through to hf-mount-fuse.
+	// Flags like "read-only", "uid=1000", "advanced-writes" become
+	// "--read-only", "--uid=1000", "--advanced-writes".
 	for _, flag := range volCap.GetMount().GetMountFlags() {
-		switch {
-		case flag == "read-only":
-			opts.ReadOnly = true
-		case flag == "advanced-writes":
-			opts.AdvancedWrites = true
-		case strings.HasPrefix(flag, "uid="):
-			opts.UID = strings.TrimPrefix(flag, "uid=")
-		case strings.HasPrefix(flag, "gid="):
-			opts.GID = strings.TrimPrefix(flag, "gid=")
-		case isAllowedMountFlag(flag):
-			opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
-		default:
-			klog.Warningf("Ignoring unsupported mount flag: %s", flag)
-		}
+		opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
 	}
 
 	if err := d.mounter.Mount(sourceType, sourceID, target, opts); err != nil {
@@ -197,17 +185,4 @@ func sanitizeVolumeID(id string) string {
 	return url.PathEscape(id)
 }
 
-// allowedMountFlags lists mount flags that can be passed through to hf-mount-fuse.
-var allowedMountFlags = map[string]bool{
-	"metadata-ttl-minimal": true,
-}
-
-func isAllowedMountFlag(flag string) bool {
-	// Check exact match and key=value flags.
-	key := flag
-	if idx := strings.IndexByte(flag, '='); idx >= 0 {
-		key = flag[:idx]
-	}
-	return allowedMountFlags[key]
-}
 

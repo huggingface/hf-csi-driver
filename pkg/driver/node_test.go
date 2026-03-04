@@ -121,14 +121,15 @@ func TestNodePublishVolume_Success(t *testing.T) {
 	if !mock.mounted[target] {
 		t.Error("expected target to be mounted")
 	}
-	if mock.lastOpts.UID != "1000" {
-		t.Errorf("expected UID 1000, got %s", mock.lastOpts.UID)
+	// Mount flags are passed through as extra args.
+	expectedExtra := []string{"--uid=1000", "--gid=1000", "--read-only"}
+	if len(mock.lastOpts.ExtraArgs) != len(expectedExtra) {
+		t.Fatalf("expected ExtraArgs %v, got %v", expectedExtra, mock.lastOpts.ExtraArgs)
 	}
-	if mock.lastOpts.GID != "1000" {
-		t.Errorf("expected GID 1000, got %s", mock.lastOpts.GID)
-	}
-	if !mock.lastOpts.ReadOnly {
-		t.Error("expected ReadOnly to be true")
+	for i, a := range mock.lastOpts.ExtraArgs {
+		if a != expectedExtra[i] {
+			t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, expectedExtra[i], a)
+		}
 	}
 }
 
