@@ -14,11 +14,10 @@ import (
 )
 
 const (
-	hfMountBinary    = "hf-mount-fuse"
-	fusermountBinary = "fusermount3"
-	mountReadyPoll   = 100 * time.Millisecond
-	mountTimeout     = 30 * time.Second
-	stopGracePeriod  = 10 * time.Second
+	hfMountBinary   = "hf-mount-fuse"
+	mountReadyPoll  = 100 * time.Millisecond
+	mountTimeout    = 30 * time.Second
+	stopGracePeriod = 10 * time.Second
 )
 
 type MountOptions struct {
@@ -148,9 +147,8 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		if isOwner {
 			// Unexpected crash: log as warning and clean up FUSE mount.
 			klog.Warningf("%s for %s crashed: %v", hfMountBinary, target, waitErr)
-			out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
-			if umountErr != nil {
-				klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
+			if umountErr := fuseUnmount(target); umountErr != nil {
+				klog.Warningf("unmount cleanup for %s failed: %v", target, umountErr)
 			}
 		} else {
 			// Expected exit (Unmount already cleaned up).
@@ -230,10 +228,9 @@ func (m *ProcessMounter) Unmount(target string) error {
 		}
 	}
 
-	// Always try fusermount3 as fallback (handles stale mounts from previous DaemonSet).
-	out, err := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
-	if err != nil {
-		klog.V(4).Infof("fusermount3 -u -z %s: %v: %s", target, err, string(out))
+	// Lazy unmount to clean up stale FUSE mounts (e.g. from a previous DaemonSet).
+	if err := fuseUnmount(target); err != nil {
+		klog.V(4).Infof("unmount %s: %v", target, err)
 	}
 
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
