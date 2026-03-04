@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hf-repo-pv
+spec:
+  capacity:
+    storage: 1Ti  # ignored by CSI, but required by k8s
+  accessModes:
+    - ReadOnlyMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - read-only
+  csi:
+    driver: hf.csi.huggingface.co
+    volumeHandle: my-repo
+    nodePublishSecretRef:
+      name: hf-token
+      namespace: default
+    volumeAttributes:
+      sourceType: repo
+      sourceId: username/my-model
+      revision: main
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-repo-pvc
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Ti
+  volumeName: hf-repo-pv

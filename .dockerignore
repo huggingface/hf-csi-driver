@@ -1,0 +1,4 @@
+hf-mount/target/
+.git/
+*.md
+docs/

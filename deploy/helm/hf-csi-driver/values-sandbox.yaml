@@ -1,0 +1,9 @@
+image:
+  repository: 754289655784.dkr.ecr.us-east-1.amazonaws.com/hf-csi-driver
+  tag: v0.1.0
+  pullPolicy: Always
+
+logVerbosity: 4
+
+imagePullSecrets:
+  - name: ecr-pull-secret
