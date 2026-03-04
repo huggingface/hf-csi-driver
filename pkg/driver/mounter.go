@@ -46,51 +46,60 @@ type mountInfo struct {
 	done chan struct{}
 }
 
+// refMutex is a reference-counted mutex that can be safely cleaned up
+// when no goroutine holds a reference to it.
+type refMutex struct {
+	sync.Mutex
+	refs int
+}
+
 type ProcessMounter struct {
 	mu      sync.Mutex
 	mounts  map[string]*mountInfo
-	locks   map[string]*sync.Mutex
+	locks   map[string]*refMutex
 	checker mount.Interface
 }
 
 func NewProcessMounter() *ProcessMounter {
 	return &ProcessMounter{
 		mounts:  make(map[string]*mountInfo),
-		locks:   make(map[string]*sync.Mutex),
+		locks:   make(map[string]*refMutex),
 		checker: mount.New(""),
 	}
 }
 
-// targetLock returns a per-target mutex. Stale locks are periodically cleaned
-// up to prevent unbounded growth on long-lived nodes.
-func (m *ProcessMounter) targetLock(target string) *sync.Mutex {
+// acquireTargetLock returns a per-target mutex with its refcount incremented.
+// The caller must call releaseTargetLock when done.
+func (m *ProcessMounter) acquireTargetLock(target string) *refMutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Periodically clean up locks for targets that no longer have active mounts.
-	// Threshold is generous to avoid frequent cleanup overhead.
-	if len(m.locks) > len(m.mounts)*2+100 {
-		for t, lk := range m.locks {
-			if _, active := m.mounts[t]; !active {
-				// Only remove if nobody is holding the lock (TryLock succeeds).
-				if lk.TryLock() {
-					lk.Unlock()
-					delete(m.locks, t)
-				}
-			}
-		}
+	lk, ok := m.locks[target]
+	if !ok {
+		lk = &refMutex{}
+		m.locks[target] = lk
 	}
+	lk.refs++
+	return lk
+}
 
-	if _, ok := m.locks[target]; !ok {
-		m.locks[target] = &sync.Mutex{}
+// releaseTargetLock decrements the refcount and removes the lock entry if
+// no other goroutine holds a reference.
+func (m *ProcessMounter) releaseTargetLock(target string, lk *refMutex) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lk.refs--
+	if lk.refs == 0 {
+		delete(m.locks, target)
 	}
-	return m.locks[target]
 }
 
 func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
-	tl := m.targetLock(target)
+	tl := m.acquireTargetLock(target)
 	tl.Lock()
-	defer tl.Unlock()
+	defer func() {
+		tl.Unlock()
+		m.releaseTargetLock(target, tl)
+	}()
 
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
@@ -112,7 +121,11 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 	info := &mountInfo{cmd: cmd, done: done}
 
 	// Start crash detection goroutine immediately so done channel is always serviced.
+	// Acquire its own target lock reference to prevent cleanup race.
+	crashTl := m.acquireTargetLock(target)
 	go func() {
+		defer m.releaseTargetLock(target, crashTl)
+
 		waitErr := cmd.Wait()
 		// Close done FIRST so killProcess (which waits on done under tl) can
 		// complete and release tl before we try to acquire it.
@@ -120,9 +133,8 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 		// Acquire the per-target lock to serialize with Mount/Unmount and
 		// atomically check ownership + cleanup without TOCTOU races.
-		tl := m.targetLock(target)
-		tl.Lock()
-		defer tl.Unlock()
+		crashTl.Lock()
+		defer crashTl.Unlock()
 
 		m.mu.Lock()
 		current, exists := m.mounts[target]
@@ -197,9 +209,12 @@ func (m *ProcessMounter) waitForMount(target string, processDone <-chan struct{}
 }
 
 func (m *ProcessMounter) Unmount(target string) error {
-	tl := m.targetLock(target)
+	tl := m.acquireTargetLock(target)
 	tl.Lock()
-	defer tl.Unlock()
+	defer func() {
+		tl.Unlock()
+		m.releaseTargetLock(target, tl)
+	}()
 
 	m.mu.Lock()
 	info, tracked := m.mounts[target]
