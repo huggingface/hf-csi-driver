@@ -12,6 +12,9 @@ spec:
   csi:
     driver: hf.csi.huggingface.co
     volumeHandle: my-bucket
+    nodePublishSecretRef:
+      name: hf-token
+      namespace: default
     volumeAttributes:
       sourceType: bucket
       sourceId: username/my-bucket

@@ -33,6 +33,7 @@ type MountOptions struct {
 	UID              string
 	GID              string
 	ExtraArgs        []string
+	HFToken          string
 }
 
 type Mounter interface {
@@ -108,7 +109,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	cmd := exec.Command(hfMountBinary, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = os.Environ()
+	cmd.Env = buildEnv(opts.HFToken)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -273,6 +274,28 @@ func (m *ProcessMounter) killProcess(info *mountInfo) error {
 
 	<-info.done
 	return nil
+}
+
+// buildEnv returns the environment for the hf-mount-fuse process.
+// If token is non-empty it overrides any inherited HF_TOKEN.
+func buildEnv(token string) []string {
+	env := os.Environ()
+	if token == "" {
+		return env
+	}
+	// Replace or append HF_TOKEN.
+	set := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "HF_TOKEN=") {
+			env[i] = "HF_TOKEN=" + token
+			set = true
+			break
+		}
+	}
+	if !set {
+		env = append(env, "HF_TOKEN="+token)
+	}
+	return env
 }
 
 func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string, error) {

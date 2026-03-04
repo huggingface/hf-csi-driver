@@ -80,6 +80,13 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return nil, status.Errorf(codes.Internal, "failed to create target directory %s: %v", target, err)
 	}
 
+	// Resolve HF token: per-volume secret (nodePublishSecretRef) takes
+	// precedence over the global HF_TOKEN env var on the DaemonSet.
+	hfToken := req.GetSecrets()["token"]
+	if hfToken == "" {
+		hfToken = os.Getenv("HF_TOKEN")
+	}
+
 	// Build mount options.
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
@@ -89,6 +96,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
+		HFToken:          hfToken,
 	}
 
 	// Parse mount flags from PV mountOptions.

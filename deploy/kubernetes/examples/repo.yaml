@@ -14,6 +14,9 @@ spec:
   csi:
     driver: hf.csi.huggingface.co
     volumeHandle: my-repo
+    nodePublishSecretRef:
+      name: hf-token
+      namespace: default
     volumeAttributes:
       sourceType: repo
       sourceId: username/my-model

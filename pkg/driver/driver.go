@@ -31,10 +31,6 @@ type Driver struct {
 }
 
 func NewDriver(endpoint, nodeID string) *Driver {
-	if os.Getenv("HF_TOKEN") == "" {
-		klog.Warning("HF_TOKEN is not set; only public repos/buckets will be accessible")
-	}
-
 	return &Driver{
 		endpoint: endpoint,
 		nodeID:   nodeID,
