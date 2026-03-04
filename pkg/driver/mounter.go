@@ -61,11 +61,26 @@ func NewProcessMounter() *ProcessMounter {
 	}
 }
 
-// targetLock returns a per-target mutex. These are never deleted to avoid
-// races between the crash goroutine and concurrent Mount/Unmount calls.
+// targetLock returns a per-target mutex. Stale locks are periodically cleaned
+// up to prevent unbounded growth on long-lived nodes.
 func (m *ProcessMounter) targetLock(target string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Periodically clean up locks for targets that no longer have active mounts.
+	// Threshold is generous to avoid frequent cleanup overhead.
+	if len(m.locks) > len(m.mounts)*2+100 {
+		for t, lk := range m.locks {
+			if _, active := m.mounts[t]; !active {
+				// Only remove if nobody is holding the lock (TryLock succeeds).
+				if lk.TryLock() {
+					lk.Unlock()
+					delete(m.locks, t)
+				}
+			}
+		}
+	}
+
 	if _, ok := m.locks[target]; !ok {
 		m.locks[target] = &sync.Mutex{}
 	}

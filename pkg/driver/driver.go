@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -73,9 +74,22 @@ func (d *Driver) Run() error {
 }
 
 func (d *Driver) Stop() {
-	if d.srv != nil {
-		klog.Info("Stopping gRPC server")
+	if d.srv == nil {
+		return
+	}
+	klog.Info("Stopping gRPC server")
+
+	stopped := make(chan struct{})
+	go func() {
 		d.srv.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		klog.Warning("Graceful stop timed out, forcing stop")
+		d.srv.Stop()
 	}
 }
 
