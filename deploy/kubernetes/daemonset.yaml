@@ -28,12 +28,6 @@ spec:
             - --node-id=$(CSI_NODE_NAME)
             - --v=4
           env:
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: hf-token
-                  key: token
-                  optional: true
             - name: CSI_NODE_NAME
               valueFrom:
                 fieldRef:

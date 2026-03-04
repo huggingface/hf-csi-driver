@@ -5,13 +5,6 @@ image:
 
 logVerbosity: 4
 
-# HuggingFace token - leave empty to only support public repos/buckets.
-# Can also reference an existing secret with hfToken.existingSecret.
-hfToken:
-  value: ""
-  existingSecret: ""
-  existingSecretKey: token
-
 cacheDir: /var/lib/hf-csi-driver/cache
 
 nodeSelector:

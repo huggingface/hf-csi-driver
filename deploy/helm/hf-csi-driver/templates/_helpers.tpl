@@ -26,11 +26,3 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- define "hf-csi-driver.selectorLabels" -}}
 app: hf-csi-node
 {{- end }}
-
-{{- define "hf-csi-driver.secretName" -}}
-{{- if .Values.hfToken.existingSecret }}
-{{- .Values.hfToken.existingSecret }}
-{{- else }}
-{{- include "hf-csi-driver.fullname" . }}-token
-{{- end }}
-{{- end }}

@@ -39,12 +39,6 @@ spec:
             - --node-id=$(CSI_NODE_NAME)
             - --v={{ .Values.logVerbosity }}
           env:
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "hf-csi-driver.secretName" . }}
-                  key: {{ .Values.hfToken.existingSecretKey }}
-                  optional: true
             - name: CSI_NODE_NAME
               valueFrom:
                 fieldRef:

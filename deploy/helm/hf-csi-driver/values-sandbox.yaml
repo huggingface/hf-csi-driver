@@ -7,7 +7,3 @@ logVerbosity: 4
 
 imagePullSecrets:
   - name: ecr-pull-secret
-
-hfToken:
-  existingSecret: hf-token
-  existingSecretKey: token
