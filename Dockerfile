@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 go build -o /bin/hf-csi-driver ./cmd/hf-csi-driver/
 
 # Stage 3: Runtime
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends fuse3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libfuse3-3 ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=rust-builder /build/target/release/hf-mount-fuse /usr/local/bin/
 COPY --from=go-builder /bin/hf-csi-driver /bin/
 ENTRYPOINT ["/bin/hf-csi-driver"]
