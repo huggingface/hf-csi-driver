@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "hf-csi-driver.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hf-csi-driver.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "hf-csi-driver.fullname" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: hf-csi-plugin
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --endpoint=unix:///csi/csi.sock
+            - --node-id=$(CSI_NODE_NAME)
+            - --v={{ .Values.logVerbosity }}
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hf-csi-driver.secretName" . }}
+                  key: {{ .Values.hfToken.existingSecretKey }}
+                  optional: true
+            - name: CSI_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: plugin-dir
+              mountPath: /csi
+            - name: cache-dir
+              mountPath: {{ .Values.cacheDir }}
+          ports:
+            - containerPort: 9808
+              name: healthz
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+            periodSeconds: 10
+
+        - name: node-driver-registrar
+          image: {{ .Values.sidecars.nodeDriverRegistrar.image }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+
+        - name: liveness-probe
+          image: {{ .Values.sidecars.livenessProbe.image }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --health-port=9808
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+
+      volumes:
+        - name: kubelet-dir
+          hostPath:
+            path: /var/lib/kubelet
+            type: Directory
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/hf.csi.huggingface.co/
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: cache-dir
+          hostPath:
+            path: {{ .Values.cacheDir }}
+            type: DirectoryOrCreate

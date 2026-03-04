@@ -1,0 +1,5 @@
+bin/
+/hf-csi-driver
+*.exe
+hf-mount/
+.DS_Store

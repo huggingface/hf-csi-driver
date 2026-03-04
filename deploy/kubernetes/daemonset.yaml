@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hf-csi-node
+  namespace: kube-system
+  labels:
+    app: hf-csi-driver
+spec:
+  selector:
+    matchLabels:
+      app: hf-csi-node
+  template:
+    metadata:
+      labels:
+        app: hf-csi-node
+    spec:
+      priorityClassName: system-node-critical
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - operator: Exists
+      serviceAccountName: hf-csi-driver
+      containers:
+        - name: hf-csi-plugin
+          image: ghcr.io/huggingface/hf-csi-driver:v0.1.0
+          args:
+            - --endpoint=unix:///csi/csi.sock
+            - --node-id=$(CSI_NODE_NAME)
+            - --v=4
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            - name: CSI_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: plugin-dir
+              mountPath: /csi
+            - name: cache-dir
+              mountPath: /var/lib/hf-csi-driver/cache
+          ports:
+            - containerPort: 9808
+              name: healthz
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+            periodSeconds: 10
+
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.1
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --health-port=9808
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+
+      volumes:
+        - name: kubelet-dir
+          hostPath:
+            path: /var/lib/kubelet
+            type: Directory
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/hf.csi.huggingface.co/
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: cache-dir
+          hostPath:
+            path: /var/lib/hf-csi-driver/cache
+            type: DirectoryOrCreate
