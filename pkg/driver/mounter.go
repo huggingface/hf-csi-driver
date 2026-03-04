@@ -2,6 +2,7 @@ package driver
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,8 +40,36 @@ type Mounter interface {
 }
 
 type mountInfo struct {
-	cmd  *exec.Cmd
-	done chan struct{}
+	cmd    *exec.Cmd
+	done   chan struct{}
+	stderr *tailWriter
+}
+
+// tailWriter is an io.Writer that keeps the last N bytes written.
+type tailWriter struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func newTailWriter(max int) *tailWriter {
+	return &tailWriter{max: max}
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	w.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return string(w.buf)
 }
 
 // refMutex is a reference-counted mutex that can be safely cleaned up
@@ -106,8 +135,9 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 	cmd := exec.Command(hfMountBinary, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = buildEnv(opts.HFToken)
+	stderrBuf := newTailWriter(2048)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderrBuf)
 
 	klog.Infof("Starting %s %s", hfMountBinary, strings.Join(args, " "))
 	if err := cmd.Start(); err != nil {
@@ -115,7 +145,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 	}
 
 	done := make(chan struct{})
-	info := &mountInfo{cmd: cmd, done: done}
+	info := &mountInfo{cmd: cmd, done: done, stderr: stderrBuf}
 
 	// Start crash detection goroutine immediately so done channel is always serviced.
 	// Acquire its own target lock reference to prevent cleanup race.
@@ -169,6 +199,10 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 			delete(m.mounts, target)
 		}
 		m.mu.Unlock()
+		stderr := strings.TrimSpace(info.stderr.String())
+		if stderr != "" {
+			return fmt.Errorf("mount point %s did not become ready: %w\nstderr: %s", target, mountErr, stderr)
+		}
 		return fmt.Errorf("mount point %s did not become ready: %w", target, mountErr)
 	}
 
