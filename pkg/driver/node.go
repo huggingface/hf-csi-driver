@@ -42,6 +42,9 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	if volCap == nil {
 		return nil, status.Error(codes.InvalidArgument, "volumeCapability is required")
 	}
+	if volCap.GetMount() == nil {
+		return nil, status.Error(codes.InvalidArgument, "only mount access type is supported")
+	}
 
 	sourceType := volCtx[volumeCtxSourceType]
 	sourceID := volCtx[volumeCtxSourceID]
@@ -80,7 +83,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
 		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
-		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(defaultCacheBase, volumeID)),
+		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(defaultCacheBase, sanitizeVolumeID(volumeID))),
 		CacheSize:        volCtx[volumeCtxCacheSize],
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
@@ -88,20 +91,20 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	// Parse mount flags from PV mountOptions.
-	if volCap.GetMount() != nil {
-		for _, flag := range volCap.GetMount().GetMountFlags() {
-			switch {
-			case flag == "read-only":
-				opts.ReadOnly = true
-			case flag == "advanced-writes":
-				opts.AdvancedWrites = true
-			case strings.HasPrefix(flag, "uid="):
-				opts.UID = strings.TrimPrefix(flag, "uid=")
-			case strings.HasPrefix(flag, "gid="):
-				opts.GID = strings.TrimPrefix(flag, "gid=")
-			default:
-				opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
-			}
+	for _, flag := range volCap.GetMount().GetMountFlags() {
+		switch {
+		case flag == "read-only":
+			opts.ReadOnly = true
+		case flag == "advanced-writes":
+			opts.AdvancedWrites = true
+		case strings.HasPrefix(flag, "uid="):
+			opts.UID = strings.TrimPrefix(flag, "uid=")
+		case strings.HasPrefix(flag, "gid="):
+			opts.GID = strings.TrimPrefix(flag, "gid=")
+		case isAllowedMountFlag(flag):
+			opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
+		default:
+			klog.Warningf("Ignoring unsupported mount flag: %s", flag)
 		}
 	}
 
@@ -141,7 +144,9 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 
 	if !mounted {
 		klog.V(4).Infof("Target %s is not mounted, cleaning up directory", target)
-		os.Remove(target)
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			klog.Warningf("Failed to remove target directory %s: %v", target, err)
+		}
 		return &csi.NodeUnpublishVolumeResponse{}, nil
 	}
 
@@ -183,5 +188,24 @@ func getWithDefault(m map[string]string, key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// sanitizeVolumeID replaces path separators to prevent directory traversal.
+func sanitizeVolumeID(id string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(id, "/", "_"), "..", "__")
+}
+
+// allowedMountFlags lists mount flags that can be passed through to hf-mount-fuse.
+var allowedMountFlags = map[string]bool{
+	"metadata-ttl-minimal": true,
+}
+
+func isAllowedMountFlag(flag string) bool {
+	// Check exact match and key=value flags.
+	key := flag
+	if idx := strings.IndexByte(flag, '='); idx >= 0 {
+		key = flag[:idx]
+	}
+	return allowedMountFlags[key]
 }
 

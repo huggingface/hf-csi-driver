@@ -94,6 +94,22 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 	done := make(chan struct{})
 	info := &mountInfo{cmd: cmd, done: done}
 
+	// Start crash detection goroutine immediately so done channel is always serviced.
+	go func() {
+		defer close(done)
+		err := cmd.Wait()
+		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, err)
+		// Lazy unmount to clean up stale FUSE mount.
+		out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
+		if umountErr != nil {
+			klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
+		}
+		m.mu.Lock()
+		delete(m.mounts, target)
+		delete(m.locks, target)
+		m.mu.Unlock()
+	}()
+
 	m.mu.Lock()
 	m.mounts[target] = info
 	m.mu.Unlock()
@@ -106,21 +122,6 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		m.mu.Unlock()
 		return fmt.Errorf("mount point %s did not become ready: %w", target, err)
 	}
-
-	// Crash detection goroutine.
-	go func() {
-		defer close(done)
-		err := cmd.Wait()
-		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, err)
-		// Lazy unmount to clean up stale FUSE mount.
-		out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
-		if umountErr != nil {
-			klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
-		}
-		m.mu.Lock()
-		delete(m.mounts, target)
-		m.mu.Unlock()
-	}()
 
 	klog.Infof("Successfully mounted %s %s at %s", sourceType, sourceID, target)
 	return nil
@@ -155,6 +156,7 @@ func (m *ProcessMounter) Unmount(target string) error {
 		}
 		m.mu.Lock()
 		delete(m.mounts, target)
+		delete(m.locks, target)
 		m.mu.Unlock()
 	}
 

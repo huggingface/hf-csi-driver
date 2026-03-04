@@ -57,17 +57,27 @@ func TestNodePublishVolume_MissingFields(t *testing.T) {
 			VolumeId:   "vol1",
 			TargetPath: "/mnt",
 		}},
-		{"missing sourceType", &csi.NodePublishVolumeRequest{
+		{"block access type", &csi.NodePublishVolumeRequest{
 			VolumeId:         "vol1",
 			TargetPath:       "/mnt",
 			VolumeCapability: &csi.VolumeCapability{},
-			VolumeContext:    map[string]string{"sourceId": "user/b"},
+			VolumeContext:    map[string]string{"sourceType": "bucket", "sourceId": "user/b"},
+		}},
+		{"missing sourceType", &csi.NodePublishVolumeRequest{
+			VolumeId:   "vol1",
+			TargetPath: "/mnt",
+			VolumeCapability: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			},
+			VolumeContext: map[string]string{"sourceId": "user/b"},
 		}},
 		{"missing sourceId", &csi.NodePublishVolumeRequest{
-			VolumeId:         "vol1",
-			TargetPath:       "/mnt",
-			VolumeCapability: &csi.VolumeCapability{},
-			VolumeContext:    map[string]string{"sourceType": "bucket"},
+			VolumeId:   "vol1",
+			TargetPath: "/mnt",
+			VolumeCapability: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			},
+			VolumeContext: map[string]string{"sourceType": "bucket"},
 		}},
 	}
 
@@ -186,6 +196,24 @@ func TestNodeUnpublishVolume_NotMounted(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
+	}
+}
+
+func TestSanitizeVolumeID(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"my-volume", "my-volume"},
+		{"user/bucket", "user_bucket"},
+		{"../../../etc/passwd", "_________etc_passwd"},
+		{"/absolute/path", "_absolute_path"},
+	}
+	for _, tt := range tests {
+		got := sanitizeVolumeID(tt.input)
+		if got != tt.expected {
+			t.Errorf("sanitizeVolumeID(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
 	}
 }
 

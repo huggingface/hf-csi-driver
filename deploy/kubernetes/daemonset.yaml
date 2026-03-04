@@ -22,7 +22,7 @@ spec:
       serviceAccountName: hf-csi-driver
       containers:
         - name: hf-csi-plugin
-          image: ghcr.io/huggingface/hf-csi-driver:latest
+          image: ghcr.io/huggingface/hf-csi-driver:v0.1.0
           args:
             - --endpoint=unix:///csi/csi.sock
             - --v=4
@@ -64,6 +64,9 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path=/var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
@@ -75,6 +78,9 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9808
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi

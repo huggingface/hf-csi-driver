@@ -1,7 +1,9 @@
 # Stage 1: Build hf-mount-fuse (Rust)
 FROM rust:1.85-bookworm AS rust-builder
-ARG GIT_AUTH_TOKEN
-RUN git config --global url."https://x-access-token:${GIT_AUTH_TOKEN}@github.com/".insteadOf "https://github.com/"
+RUN --mount=type=secret,id=git_auth_token \
+    if [ -f /run/secrets/git_auth_token ]; then \
+      git config --global url."https://x-access-token:$(cat /run/secrets/git_auth_token)@github.com/".insteadOf "https://github.com/"; \
+    fi
 WORKDIR /build
 COPY hf-mount/ .
 RUN cargo build --release --bin hf-mount-fuse
