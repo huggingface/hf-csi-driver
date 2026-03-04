@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: hf-bucket-pv
+spec:
+  capacity:
+    storage: 1Ti  # ignored by CSI, but required by k8s
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: hf.csi.huggingface.co
+    volumeHandle: my-bucket
+    volumeAttributes:
+      sourceType: bucket
+      sourceId: username/my-bucket
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-bucket-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Ti
+  volumeName: hf-bucket-pv

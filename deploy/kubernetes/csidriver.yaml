@@ -1,0 +1,8 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: hf.csi.huggingface.co
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  requiresRepublish: true
