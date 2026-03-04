@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	defaultCacheBase = "/var/lib/hf-csi-driver/cache"
-	defaultRevision  = "main"
+	defaultRevision = "main"
 
 	volumeCtxSourceType      = "sourceType"
 	volumeCtxSourceID        = "sourceId"
@@ -70,7 +69,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	if mounted {
-		klog.Infof("Volume %s already mounted at %s", volumeID, target)
+		// Republish path (requiresRepublish=true): kubelet calls us periodically.
+		// We intentionally don't restart the mount process to refresh credentials
+		// because that would cause I/O disruption to running pods. Token rotation
+		// requires a pod restart (unmount + remount).
+		klog.V(4).Infof("Volume %s already mounted at %s, nothing to do", volumeID, target)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -83,7 +86,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
 		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
-		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(defaultCacheBase, sanitizeVolumeID(volumeID))),
+		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
 		CacheSize:        volCtx[volumeCtxCacheSize],
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
@@ -181,8 +184,17 @@ func getWithDefault(m map[string]string, key, defaultVal string) string {
 }
 
 // sanitizeVolumeID encodes unsafe characters to prevent directory traversal and collisions.
+// url.PathEscape does not escape dots, so bare "." and ".." must be handled explicitly.
 func sanitizeVolumeID(id string) string {
-	return url.PathEscape(id)
+	s := url.PathEscape(id)
+	switch s {
+	case ".":
+		return "%2E"
+	case "..":
+		return "%2E%2E"
+	default:
+		return s
+	}
 }
 
 

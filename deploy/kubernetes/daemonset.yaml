@@ -26,6 +26,7 @@ spec:
           args:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
+            - --cache-dir=/var/lib/hf-csi-driver/cache
             - --v=4
           env:
             - name: CSI_NODE_NAME

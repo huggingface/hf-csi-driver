@@ -39,7 +39,7 @@ func (m *mockMounter) IsMountPoint(target string) (bool, error) {
 }
 
 func TestNodePublishVolume_MissingFields(t *testing.T) {
-	d := &Driver{mounter: newMockMounter()}
+	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
 	tests := []struct {
 		name string
@@ -93,7 +93,7 @@ func TestNodePublishVolume_MissingFields(t *testing.T) {
 
 func TestNodePublishVolume_Success(t *testing.T) {
 	mock := newMockMounter()
-	d := &Driver{mounter: mock}
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
 
 	target := filepath.Join(t.TempDir(), "target")
 
@@ -135,7 +135,7 @@ func TestNodePublishVolume_Success(t *testing.T) {
 
 func TestNodePublishVolume_Idempotent(t *testing.T) {
 	mock := newMockMounter()
-	d := &Driver{mounter: mock}
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
 
 	target := filepath.Join(t.TempDir(), "target")
 
@@ -165,7 +165,7 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 }
 
 func TestNodeUnpublishVolume_MissingFields(t *testing.T) {
-	d := &Driver{mounter: newMockMounter()}
+	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
 	tests := []struct {
 		name string
@@ -186,7 +186,7 @@ func TestNodeUnpublishVolume_MissingFields(t *testing.T) {
 }
 
 func TestNodeUnpublishVolume_NotMounted(t *testing.T) {
-	d := &Driver{mounter: newMockMounter()}
+	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
 	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
 		VolumeId:   "vol1",
@@ -210,6 +210,8 @@ func TestSanitizeVolumeID(t *testing.T) {
 		{"../../../etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd"},
 		{"/absolute/path", "%2Fabsolute%2Fpath"},
 		{"a_b", "a_b"},
+		{".", "%2E"},
+		{"..", "%2E%2E"},
 	}
 	for _, tt := range tests {
 		got := sanitizeVolumeID(tt.input)
@@ -221,7 +223,7 @@ func TestSanitizeVolumeID(t *testing.T) {
 
 func TestNodeUnpublishVolume_Success(t *testing.T) {
 	mock := newMockMounter()
-	d := &Driver{mounter: mock}
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
 
 	target := filepath.Join(t.TempDir(), "target")
 	_ = os.MkdirAll(target, 0750)

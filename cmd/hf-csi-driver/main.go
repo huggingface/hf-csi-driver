@@ -16,6 +16,7 @@ func main() {
 	var (
 		endpoint    = flag.String("endpoint", "unix:///var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock", "CSI endpoint")
 		nodeID      = flag.String("node-id", "", "Node ID")
+		cacheDir    = flag.String("cache-dir", driver.DefaultCacheBase, "Base directory for volume caches")
 		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -35,7 +36,7 @@ func main() {
 		*nodeID = hostname
 	}
 
-	drv := driver.NewDriver(*endpoint, *nodeID)
+	drv := driver.NewDriver(*endpoint, *nodeID, *cacheDir)
 
 	// Signal handler.
 	sigCh := make(chan os.Signal, 1)

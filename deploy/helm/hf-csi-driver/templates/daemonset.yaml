@@ -37,6 +37,7 @@ spec:
           args:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
+            - --cache-dir={{ .Values.cacheDir }}
             - --v={{ .Values.logVerbosity }}
           env:
             - name: CSI_NODE_NAME

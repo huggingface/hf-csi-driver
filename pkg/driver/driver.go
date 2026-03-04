@@ -19,22 +19,29 @@ const (
 
 var Version = "dev"
 
+const DefaultCacheBase = "/var/lib/hf-csi-driver/cache"
+
 type Driver struct {
 	csi.UnimplementedIdentityServer
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
 
-	endpoint string
-	nodeID   string
-	srv      *grpc.Server
-	mounter  Mounter
+	endpoint  string
+	nodeID    string
+	cacheBase string
+	srv       *grpc.Server
+	mounter   Mounter
 }
 
-func NewDriver(endpoint, nodeID string) *Driver {
+func NewDriver(endpoint, nodeID, cacheBase string) *Driver {
+	if cacheBase == "" {
+		cacheBase = DefaultCacheBase
+	}
 	return &Driver{
-		endpoint: endpoint,
-		nodeID:   nodeID,
-		mounter:  NewProcessMounter(),
+		endpoint:  endpoint,
+		nodeID:    nodeID,
+		cacheBase: cacheBase,
+		mounter:   NewProcessMounter(),
 	}
 }
 
