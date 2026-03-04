@@ -1,5 +1,5 @@
 # Stage 1: Build hf-mount-fuse (Rust)
-FROM rust:1.85-bookworm AS rust-builder
+FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /build
 COPY hf-mount/ .
 RUN --mount=type=secret,id=git_auth_token \
@@ -11,7 +11,7 @@ RUN --mount=type=secret,id=git_auth_token \
     cargo build --release --bin hf-mount-fuse
 
 # Stage 2: Build CSI driver (Go)
-FROM golang:1.24-bookworm AS go-builder
+FROM golang:1.25-bookworm AS go-builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download

@@ -17,12 +17,12 @@ func TestBuildArgs_Bucket(t *testing.T) {
 	}
 
 	expected := []string{
-		"bucket", "user/my-bucket", "/mnt/target",
 		"--hub-endpoint", "https://huggingface.co",
 		"--cache-dir", "/cache/vol1",
 		"--read-only",
 		"--uid", "1000",
 		"--gid", "1000",
+		"bucket", "user/my-bucket", "/mnt/target",
 	}
 
 	if len(args) != len(expected) {
@@ -47,6 +47,7 @@ func TestBuildArgs_Repo(t *testing.T) {
 		"repo", "user/my-model", "/mnt/target",
 		"--revision", "v1.0",
 	}
+	// Note: repo with no global options, --revision is a subcommand flag
 
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)

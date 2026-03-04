@@ -282,37 +282,42 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 		return nil, fmt.Errorf("unsupported sourceType: %q (must be \"bucket\" or \"repo\")", sourceType)
 	}
 
-	args := []string{sourceType, sourceID, target}
-
-	if sourceType == "repo" && opts.Revision != "" {
-		args = append(args, "--revision", opts.Revision)
-	}
+	// Global options (before subcommand).
+	var globalArgs []string
 	if opts.HubEndpoint != "" {
-		args = append(args, "--hub-endpoint", opts.HubEndpoint)
+		globalArgs = append(globalArgs, "--hub-endpoint", opts.HubEndpoint)
 	}
 	if opts.CacheDir != "" {
-		args = append(args, "--cache-dir", opts.CacheDir)
+		globalArgs = append(globalArgs, "--cache-dir", opts.CacheDir)
 	}
 	if opts.CacheSize != "" {
-		args = append(args, "--cache-size", opts.CacheSize)
+		globalArgs = append(globalArgs, "--cache-size", opts.CacheSize)
 	}
 	if opts.PollIntervalSecs != "" {
-		args = append(args, "--poll-interval-secs", opts.PollIntervalSecs)
+		globalArgs = append(globalArgs, "--poll-interval-secs", opts.PollIntervalSecs)
 	}
 	if opts.MetadataTtlMs != "" {
-		args = append(args, "--metadata-ttl-ms", opts.MetadataTtlMs)
+		globalArgs = append(globalArgs, "--metadata-ttl-ms", opts.MetadataTtlMs)
 	}
 	if opts.ReadOnly {
-		args = append(args, "--read-only")
+		globalArgs = append(globalArgs, "--read-only")
 	}
 	if opts.AdvancedWrites {
-		args = append(args, "--advanced-writes")
+		globalArgs = append(globalArgs, "--advanced-writes")
 	}
 	if opts.UID != "" {
-		args = append(args, "--uid", opts.UID)
+		globalArgs = append(globalArgs, "--uid", opts.UID)
 	}
 	if opts.GID != "" {
-		args = append(args, "--gid", opts.GID)
+		globalArgs = append(globalArgs, "--gid", opts.GID)
+	}
+
+	// Subcommand + positional args.
+	args := append(globalArgs, sourceType, sourceID, target)
+
+	// Subcommand-specific flags.
+	if sourceType == "repo" && opts.Revision != "" {
+		args = append(args, "--revision", opts.Revision)
 	}
 	args = append(args, opts.ExtraArgs...)
 
