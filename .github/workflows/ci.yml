@@ -33,7 +33,7 @@ jobs:
   build:
     name: Build
     runs-on:
-      group: cpu-low
+      group: cpu-high
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
