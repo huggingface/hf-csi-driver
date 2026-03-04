@@ -61,10 +61,10 @@ func NewProcessMounter() *ProcessMounter {
 
 func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
@@ -76,6 +76,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	klog.Infof("Starting %s %s", hfMountBinary, strings.Join(args, " "))
 	if err := cmd.Start(); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("failed to start %s: %w", hfMountBinary, err)
 	}
 
@@ -85,28 +86,40 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 	// Start crash detection goroutine immediately so done channel is always serviced.
 	go func() {
 		defer close(done)
-		err := cmd.Wait()
-		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, err)
-		// Lazy unmount to clean up stale FUSE mount.
-		out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
-		if umountErr != nil {
-			klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
-		}
+		waitErr := cmd.Wait()
+		klog.Warningf("%s for %s exited: %v", hfMountBinary, target, waitErr)
+
+		// Only clean up if this mountInfo is still the active one for this target.
 		m.mu.Lock()
-		delete(m.mounts, target)
+		current, exists := m.mounts[target]
+		isOwner := exists && current == info
+		if isOwner {
+			delete(m.mounts, target)
+		}
 		m.mu.Unlock()
+
+		if isOwner {
+			out, umountErr := exec.Command(fusermountBinary, "-u", "-z", target).CombinedOutput()
+			if umountErr != nil {
+				klog.Warningf("fusermount3 cleanup for %s failed: %v: %s", target, umountErr, string(out))
+			}
+		}
 	}()
 
 	m.mounts[target] = info
-
-	// Temporarily release lock while waiting for mount to become ready.
 	m.mu.Unlock()
+
+	// Wait for mount point to become ready (lock not held).
 	mountErr := m.waitForMount(target, done)
-	m.mu.Lock()
 
 	if mountErr != nil {
+		// Kill process without holding m.mu to avoid deadlock with the crash goroutine.
 		_ = m.killProcess(info)
-		delete(m.mounts, target)
+		m.mu.Lock()
+		if m.mounts[target] == info {
+			delete(m.mounts, target)
+		}
+		m.mu.Unlock()
 		return fmt.Errorf("mount point %s did not become ready: %w", target, mountErr)
 	}
 
