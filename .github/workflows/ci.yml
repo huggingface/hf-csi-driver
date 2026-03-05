@@ -54,6 +54,8 @@ jobs:
     name: Kind Integration
     runs-on:
       group: cpu-low
+    env:
+      KUBERNETES_SERVICE_HOST: ""
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -83,6 +85,9 @@ jobs:
     name: E2E Mount Test
     runs-on:
       group: cpu-high
+    env:
+      # Prevent kubectl from using ARC runner's in-cluster config
+      KUBERNETES_SERVICE_HOST: ""
     steps:
       - uses: actions/checkout@v4
       - name: Checkout submodules
