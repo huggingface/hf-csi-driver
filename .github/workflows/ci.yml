@@ -57,9 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - uses: helm/kind-action@v1
-        with:
-          cluster_name: csi-test
+      - name: Create Kind cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name csi-test --wait 60s
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
