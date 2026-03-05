@@ -49,3 +49,38 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/hf-csi-driver/
+
+  kind-test:
+    name: Kind Integration
+    runs-on:
+      group: cpu-low
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Create Kind cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name csi-test --wait 60s
+      - name: Install chart
+        run: |
+          helm install hf-csi deploy/helm/hf-csi-driver/ \
+            --set image.repository=test \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --wait-for-jobs \
+            --timeout 30s
+      - name: Verify resources
+        run: |
+          # CSIDriver must exist
+          kubectl get csidriver hf.csi.huggingface.co
+
+          # DaemonSet must exist
+          kubectl get daemonset hf-csi-hf-csi-driver-node
+
+          # ServiceAccount must exist
+          kubectl get serviceaccount hf-csi-hf-csi-driver
+
+          # CSIDriver spec checks
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
