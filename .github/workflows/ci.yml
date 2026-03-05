@@ -53,11 +53,9 @@ jobs:
   kind-test:
     name: Kind Integration
     runs-on:
-      group: cpu-high
+      group: cpu-low
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: azure/setup-helm@v4
 
       - name: Create Kind cluster
@@ -66,20 +64,10 @@ jobs:
           chmod +x ./kind
           ./kind create cluster --name csi-test --wait 60s
 
-      - name: Build and load image
-        run: |
-          docker build -t hf-csi-driver:test .
-          ./kind load docker-image hf-csi-driver:test --name csi-test
-
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default \
-            --set image.repository=hf-csi-driver \
-            --set image.tag=test \
-            --set image.pullPolicy=Never
-          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
-            --namespace default --timeout=120s
+            --namespace default
 
       - name: Verify resources
         run: |
@@ -89,7 +77,40 @@ jobs:
           kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
           kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
 
-      - name: Test mount
+  e2e-test:
+    name: E2E Mount Test
+    runs-on:
+      group: cpu-high
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      - uses: azure/setup-helm@v4
+
+      - name: Create Kind cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name e2e --wait 60s
+
+      - name: Build and load image
+        run: |
+          docker build -t hf-csi-driver:test .
+          ./kind load docker-image hf-csi-driver:test --name e2e
+
+      - name: Install chart
+        run: |
+          helm install hf-csi deploy/helm/hf-csi-driver/ \
+            --namespace default \
+            --set image.repository=hf-csi-driver \
+            --set image.tag=test \
+            --set image.pullPolicy=Never
+          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
+            --namespace default --timeout=60s
+
+      - name: Deploy test pod
         run: |
           kubectl create secret generic hf-token --from-literal=token=''
 
@@ -149,11 +170,15 @@ jobs:
           kubectl wait pod/test-mount \
             --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
 
-      - name: Verify mount output
+      - name: Verify mount
         run: |
           echo "=== Pod logs ==="
           kubectl logs test-mount
+
+          # ls output must contain config.json
           kubectl logs test-mount | grep config.json
+
+          # cat output must contain valid JSON with model_type
           kubectl logs test-mount | grep model_type
 
       - name: Debug on failure
@@ -161,10 +186,10 @@ jobs:
         run: |
           echo "=== CSI driver logs ==="
           kubectl logs -l app.kubernetes.io/name=hf-csi-driver \
-            --tail=200 -c hf-csi-driver || true
+            --tail=100 -c hf-csi-driver
           echo "=== Pod describe ==="
-          kubectl describe pod test-mount || true
+          kubectl describe pod test-mount
           echo "=== PV/PVC status ==="
-          kubectl get pv,pvc || true
+          kubectl get pv,pvc
           echo "=== Events ==="
-          kubectl get events --sort-by='.lastTimestamp' || true
+          kubectl get events --sort-by='.lastTimestamp'
