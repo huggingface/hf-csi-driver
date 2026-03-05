@@ -49,3 +49,171 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/hf-csi-driver/
+
+  kind-test:
+    name: Kind Integration
+    runs-on:
+      group: cpu-low
+    env:
+      KUBERNETES_SERVICE_HOST: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Create Kind cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name csi-test --wait 60s \
+            --kubeconfig "$HOME/.kube/kind-config"
+          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
+
+      - name: Install chart
+        run: |
+          helm install hf-csi deploy/helm/hf-csi-driver/ \
+            --namespace default
+
+      - name: Verify resources
+        run: |
+          kubectl get csidriver hf.csi.huggingface.co
+          kubectl -n default get daemonset hf-csi-hf-csi-driver-node
+          kubectl -n default get serviceaccount hf-csi-hf-csi-driver
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
+
+  e2e-test:
+    name: E2E Mount Test
+    runs-on:
+      group: cpu-high
+    env:
+      # Prevent kubectl from using ARC runner's in-cluster config
+      KUBERNETES_SERVICE_HOST: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout submodules
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
+
+      - uses: azure/setup-helm@v4
+
+      - name: Create Kind cluster
+        run: |
+          cat > /tmp/kind-config.yaml <<'KINDEOF'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            extraMounts:
+            - hostPath: /dev/fuse
+              containerPath: /dev/fuse
+              propagation: None
+          KINDEOF
+
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name e2e --wait 60s \
+            --kubeconfig "$HOME/.kube/kind-config" \
+            --config /tmp/kind-config.yaml
+          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
+
+      - name: Build and load image
+        run: |
+          docker build -t hf-csi-driver:test .
+          ./kind load docker-image hf-csi-driver:test --name e2e
+
+      - name: Install chart
+        run: |
+          helm install hf-csi deploy/helm/hf-csi-driver/ \
+            --namespace default \
+            --set image.repository=hf-csi-driver \
+            --set image.tag=test \
+            --set image.pullPolicy=Never
+          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
+            --namespace default --timeout=60s
+
+      - name: Deploy test pod
+        run: |
+          kubectl create secret generic hf-token --from-literal=token=''
+
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: test-pv
+          spec:
+            capacity:
+              storage: 1Gi
+            accessModes: [ReadOnlyMany]
+            persistentVolumeReclaimPolicy: Retain
+            csi:
+              driver: hf.csi.huggingface.co
+              volumeHandle: test-gpt2
+              nodePublishSecretRef:
+                name: hf-token
+                namespace: default
+              volumeAttributes:
+                sourceType: repo
+                sourceId: openai-community/gpt2
+                revision: main
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: test-pvc
+          spec:
+            accessModes: [ReadOnlyMany]
+            storageClassName: ""
+            resources:
+              requests:
+                storage: 1Gi
+            volumeName: test-pv
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-mount
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sh", "-c", "ls /data && cat /data/config.json"]
+              volumeMounts:
+              - name: vol
+                mountPath: /data
+                readOnly: true
+            volumes:
+            - name: vol
+              persistentVolumeClaim:
+                claimName: test-pvc
+            restartPolicy: Never
+          EOF
+
+          kubectl wait pod/test-mount \
+            --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+
+      - name: Verify mount
+        run: |
+          echo "=== Pod logs ==="
+          kubectl logs test-mount
+
+          # ls output must contain config.json
+          kubectl logs test-mount | grep config.json
+
+          # cat output must contain valid JSON with model_type
+          kubectl logs test-mount | grep model_type
+
+      - name: Debug on failure
+        if: failure()
+        run: |
+          echo "=== CSI driver logs ==="
+          kubectl logs -l app=hf-csi-node \
+            --tail=100 -c hf-csi-plugin
+          echo "=== Pod describe ==="
+          kubectl describe pod test-mount
+          echo "=== PV/PVC status ==="
+          kubectl get pv,pvc
+          echo "=== Events ==="
+          kubectl get events --sort-by='.lastTimestamp'
