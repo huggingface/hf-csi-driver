@@ -62,7 +62,9 @@ jobs:
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
           chmod +x ./kind
-          ./kind create cluster --name csi-test --wait 60s
+          ./kind create cluster --name csi-test --wait 60s \
+            --kubeconfig "$HOME/.kube/kind-config"
+          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
 
       - name: Install chart
         run: |
@@ -96,7 +98,9 @@ jobs:
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
           chmod +x ./kind
-          ./kind create cluster --name e2e --wait 60s
+          ./kind create cluster --name e2e --wait 60s \
+            --kubeconfig "$HOME/.kube/kind-config"
+          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
 
       - name: Build and load image
         run: |
