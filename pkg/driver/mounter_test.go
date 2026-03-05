@@ -6,6 +6,7 @@ import (
 
 func TestBuildArgs_Bucket(t *testing.T) {
 	args, err := buildArgs("bucket", "user/my-bucket", "/mnt/target", MountOptions{
+		HFToken:     "tok_abc",
 		HubEndpoint: "https://huggingface.co",
 		CacheDir:    "/cache/vol1",
 		ReadOnly:    true,
@@ -16,6 +17,7 @@ func TestBuildArgs_Bucket(t *testing.T) {
 	}
 
 	expected := []string{
+		"--hf-token", "tok_abc",
 		"--hub-endpoint", "https://huggingface.co",
 		"--cache-dir", "/cache/vol1",
 		"--read-only",
@@ -42,6 +44,7 @@ func TestBuildArgs_Repo(t *testing.T) {
 	}
 
 	expected := []string{
+		"--hf-token", "",
 		"repo", "user/my-model", "/mnt/target",
 		"--revision", "v1.0",
 	}
@@ -80,6 +83,7 @@ func TestBuildArgs_InvalidSourceType(t *testing.T) {
 
 func TestBuildArgs_ExtraArgsPassthrough(t *testing.T) {
 	args, err := buildArgs("bucket", "user/b", "/mnt", MountOptions{
+		HFToken:     "tok",
 		HubEndpoint: "https://hf.co",
 		CacheDir:    "/cache",
 		ReadOnly:    true,

@@ -334,7 +334,7 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 
 	// Global options (before subcommand).
-	var globalArgs []string
+	globalArgs := []string{"--hf-token", opts.HFToken}
 	if opts.HubEndpoint != "" {
 		globalArgs = append(globalArgs, "--hub-endpoint", opts.HubEndpoint)
 	}
