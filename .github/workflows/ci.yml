@@ -101,8 +101,6 @@ jobs:
 
       - name: Create Kind cluster
         run: |
-          sudo modprobe fuse
-
           cat > /tmp/kind-config.yaml <<'KINDEOF'
           kind: Cluster
           apiVersion: kind.x-k8s.io/v1alpha4
