@@ -83,9 +83,12 @@ jobs:
       group: cpu-high
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN }}
+      - name: Checkout submodules
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
 
       - uses: azure/setup-helm@v4
 
