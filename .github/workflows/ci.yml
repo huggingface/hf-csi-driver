@@ -65,6 +65,7 @@ jobs:
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
+            --namespace default \
             --set image.repository=test \
             --set image.tag=test \
             --set image.pullPolicy=Never \
@@ -76,10 +77,10 @@ jobs:
           kubectl get csidriver hf.csi.huggingface.co
 
           # DaemonSet must exist
-          kubectl get daemonset hf-csi-hf-csi-driver-node
+          kubectl -n default get daemonset hf-csi-hf-csi-driver-node
 
           # ServiceAccount must exist
-          kubectl get serviceaccount hf-csi-hf-csi-driver
+          kubectl -n default get serviceaccount hf-csi-hf-csi-driver
 
           # CSIDriver spec checks
           kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
