@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +32,7 @@ type MountOptions struct {
 	ReadOnly         bool
 	ExtraArgs        []string // passthrough flags from PV mountOptions
 	HFToken          string
+	TokenFile        string // path to a file where the token is written for live refresh
 }
 
 type Mounter interface {
@@ -126,6 +128,13 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		tl.Unlock()
 		m.releaseTargetLock(target, tl)
 	}()
+
+	// Write the token to a file so hf-mount can re-read it on refresh.
+	if opts.TokenFile != "" && opts.HFToken != "" {
+		if err := writeTokenFile(opts.TokenFile, opts.HFToken); err != nil {
+			return fmt.Errorf("failed to write token file %s: %w", opts.TokenFile, err)
+		}
+	}
 
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
@@ -354,6 +363,10 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 		globalArgs = append(globalArgs, "--read-only")
 	}
 
+	if opts.TokenFile != "" {
+		globalArgs = append(globalArgs, "--token-file", opts.TokenFile)
+	}
+
 	// ExtraArgs are global flags (--uid, --gid, etc.) that clap expects
 	// before the subcommand.
 	globalArgs = append(globalArgs, opts.ExtraArgs...)
@@ -367,4 +380,29 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 
 	return args, nil
+}
+
+// writeTokenFile atomically writes a token to a file.
+// Uses write-to-temp + rename for atomic replacement so hf-mount
+// never reads a partial token.
+func writeTokenFile(path, token string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".token-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(token); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

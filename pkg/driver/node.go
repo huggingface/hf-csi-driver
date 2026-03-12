@@ -69,11 +69,17 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	if mounted {
-		// Republish path (requiresRepublish=true): kubelet calls us periodically.
-		// We intentionally don't restart the mount process to refresh credentials
-		// because that would cause I/O disruption to running pods. Token rotation
-		// requires a pod restart (unmount + remount).
-		klog.V(4).Infof("Volume %s already mounted at %s, nothing to do", volumeID, target)
+		// Republish path (requiresRepublish=true): kubelet calls us periodically
+		// with fresh secrets. Write the updated token to the token file so
+		// hf-mount can pick it up without remounting.
+		if token := req.GetSecrets()["token"]; token != "" {
+			tokenFile := tokenFilePath(d.cacheBase, volumeID)
+			if err := writeTokenFile(tokenFile, token); err != nil {
+				klog.Warningf("Failed to refresh token file for %s: %v", volumeID, err)
+			} else {
+				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
+			}
+		}
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -83,6 +89,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	// Build mount options.
+	tokenFile := tokenFilePath(d.cacheBase, volumeID)
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
 		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
@@ -92,6 +99,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
 		HFToken:          req.GetSecrets()["token"],
+		TokenFile:        tokenFile,
 	}
 
 	// Pass mount flags straight through to hf-mount-fuse.
@@ -174,6 +182,12 @@ func (d *Driver) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi
 	return &csi.NodeGetInfoResponse{
 		NodeId: d.nodeID,
 	}, nil
+}
+
+// tokenFilePath returns the path where the CSI driver writes the token
+// for hf-mount to re-read on refresh.
+func tokenFilePath(cacheBase, volumeID string) string {
+	return filepath.Join(cacheBase, sanitizeVolumeID(volumeID), "token")
 }
 
 func getWithDefault(m map[string]string, key, defaultVal string) string {
