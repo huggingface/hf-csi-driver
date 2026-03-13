@@ -15,6 +15,7 @@ import (
 
 const (
 	defaultRevision = "main"
+	defaultTokenKey = "token"
 
 	volumeCtxSourceType      = "sourceType"
 	volumeCtxSourceID        = "sourceId"
@@ -24,6 +25,7 @@ const (
 	volumeCtxCacheSize       = "cacheSize"
 	volumeCtxPollInterval    = "pollIntervalSecs"
 	volumeCtxMetadataTtl     = "metadataTtlMs"
+	volumeCtxTokenKey        = "tokenKey"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -68,18 +70,41 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		}
 	}
 
+	tokenKey := getWithDefault(volCtx, volumeCtxTokenKey, defaultTokenKey)
+
 	if mounted {
+<<<<<<< Updated upstream
 		// Republish path (requiresRepublish=true): kubelet calls us periodically.
 		// We intentionally don't restart the mount process to refresh credentials
 		// because that would cause I/O disruption to running pods. Token rotation
 		// requires a pod restart (unmount + remount).
 		klog.V(4).Infof("Volume %s already mounted at %s, nothing to do", volumeID, target)
+=======
+		// Republish path (requiresRepublish=true): kubelet calls us periodically
+		// with fresh secrets. Write the updated token to the token file so
+		// hf-mount can pick it up without remounting.
+		if token := req.GetSecrets()[tokenKey]; token != "" {
+			tokenFile := tokenFilePath(d.cacheBase, volumeID)
+			if err := writeTokenFile(tokenFile, token); err != nil {
+				klog.Warningf("Failed to refresh token file for %s: %v", volumeID, err)
+			} else {
+				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
+			}
+		}
+>>>>>>> Stashed changes
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
 	// Create target directory.
 	if err := os.MkdirAll(target, 0750); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create target directory %s: %v", target, err)
+	}
+
+	// Fail fast if the token is not yet available (e.g. secret operator has not populated it yet).
+	// Kubelet will retry NodePublishVolume, giving the controller time to fill the token.
+	token := req.GetSecrets()[tokenKey]
+	if token == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "secret key %q is empty or missing, retrying", tokenKey)
 	}
 
 	// Build mount options.
@@ -91,7 +116,12 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
+<<<<<<< Updated upstream
 		HFToken:          req.GetSecrets()["token"],
+=======
+		HFToken:          token,
+		TokenFile:        tokenFile,
+>>>>>>> Stashed changes
 	}
 
 	// Pass mount flags straight through to hf-mount-fuse.
