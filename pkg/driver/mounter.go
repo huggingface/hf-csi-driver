@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,8 +30,8 @@ type MountOptions struct {
 	PollIntervalSecs string
 	MetadataTtlMs    string
 	ReadOnly         bool
-	ExtraArgs        []string // passthrough flags from PV mountOptions
-	HFToken          string
+	ExtraArgs []string // passthrough flags from PV mountOptions
+	TokenFile string   // path to a file where the token is written for live refresh
 }
 
 type Mounter interface {
@@ -134,7 +135,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	cmd := exec.Command(hfMountBinary, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = buildEnv(opts.HFToken)
+	cmd.Env = os.Environ()
 	stderrBuf := newTailWriter(2048)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrBuf)
@@ -304,28 +305,6 @@ func (m *ProcessMounter) killProcess(info *mountInfo) error {
 	return nil
 }
 
-// buildEnv returns the environment for the hf-mount-fuse process.
-// If token is non-empty it overrides any inherited HF_TOKEN.
-func buildEnv(token string) []string {
-	env := os.Environ()
-	if token == "" {
-		return env
-	}
-	// Replace or append HF_TOKEN.
-	set := false
-	for i, e := range env {
-		if strings.HasPrefix(e, "HF_TOKEN=") {
-			env[i] = "HF_TOKEN=" + token
-			set = true
-			break
-		}
-	}
-	if !set {
-		env = append(env, "HF_TOKEN="+token)
-	}
-	return env
-}
-
 func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string, error) {
 	switch sourceType {
 	case "bucket", "repo":
@@ -354,6 +333,10 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 		globalArgs = append(globalArgs, "--read-only")
 	}
 
+	if opts.TokenFile != "" {
+		globalArgs = append(globalArgs, "--token-file", opts.TokenFile)
+	}
+
 	// ExtraArgs are global flags (--uid, --gid, etc.) that clap expects
 	// before the subcommand.
 	globalArgs = append(globalArgs, opts.ExtraArgs...)
@@ -367,4 +350,29 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 
 	return args, nil
+}
+
+// writeTokenFile atomically writes a token to a file.
+// Uses write-to-temp + rename for atomic replacement so hf-mount
+// never reads a partial token.
+func writeTokenFile(path, token string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".token-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(token); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
