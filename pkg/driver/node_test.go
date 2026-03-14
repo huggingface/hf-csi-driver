@@ -111,6 +111,7 @@ func TestNodePublishVolume_Success(t *testing.T) {
 			"sourceType": "bucket",
 			"sourceId":   "user/my-bucket",
 		},
+		Secrets: map[string]string{"token": "test-token"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -130,6 +131,10 @@ func TestNodePublishVolume_Success(t *testing.T) {
 		if a != expectedExtra[i] {
 			t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, expectedExtra[i], a)
 		}
+	}
+	// Token file should be passed.
+	if mock.lastOpts.TokenFile == "" {
+		t.Error("expected TokenFile to be set")
 	}
 }
 
@@ -151,6 +156,7 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 			"sourceType": "bucket",
 			"sourceId":   "user/b",
 		},
+		Secrets: map[string]string{"token": "test-token"},
 	}
 
 	// First call.
@@ -158,7 +164,8 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 		t.Fatalf("first call: %v", err)
 	}
 
-	// Second call should succeed (idempotent).
+	// Second call (republish) should succeed and update token file.
+	req.Secrets["token"] = "refreshed-token"
 	if _, err := d.NodePublishVolume(context.Background(), req); err != nil {
 		t.Fatalf("second call: %v", err)
 	}

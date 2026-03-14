@@ -69,11 +69,18 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	if mounted {
-		// Republish path (requiresRepublish=true): kubelet calls us periodically.
-		// We intentionally don't restart the mount process to refresh credentials
-		// because that would cause I/O disruption to running pods. Token rotation
-		// requires a pod restart (unmount + remount).
-		klog.V(4).Infof("Volume %s already mounted at %s, nothing to do", volumeID, target)
+		// Republish path (requiresRepublish=true): kubelet calls us periodically
+		// when the Secret changes. Update the token file so hf-mount picks up
+		// refreshed credentials without restarting the FUSE process.
+		token := req.GetSecrets()["token"]
+		if token != "" {
+			cacheDir := getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID)))
+			if err := writeTokenFile(cacheDir, token); err != nil {
+				klog.Warningf("Failed to update token file on republish for %s: %v", volumeID, err)
+			} else {
+				klog.Infof("Updated token file for volume %s on republish", volumeID)
+			}
+		}
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -82,16 +89,26 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return nil, status.Errorf(codes.Internal, "failed to create target directory %s: %v", target, err)
 	}
 
+	// Write token to a file that hf-mount can re-read for credential refresh.
+	token := req.GetSecrets()["token"]
+	if token == "" {
+		return nil, status.Errorf(codes.FailedPrecondition, "secret key \"token\" is empty or missing, retrying")
+	}
+	cacheDir := getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID)))
+	if err := writeTokenFile(cacheDir, token); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to write token file: %v", err)
+	}
+
 	// Build mount options.
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
 		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
-		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
+		CacheDir:         cacheDir,
 		CacheSize:        volCtx[volumeCtxCacheSize],
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
-		HFToken:          req.GetSecrets()["token"],
+		TokenFile:        filepath.Join(cacheDir, "token"),
 	}
 
 	// Pass mount flags straight through to hf-mount-fuse.
@@ -174,6 +191,19 @@ func (d *Driver) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi
 	return &csi.NodeGetInfoResponse{
 		NodeId: d.nodeID,
 	}, nil
+}
+
+// writeTokenFile atomically writes the token to cacheDir/token.
+func writeTokenFile(cacheDir, token string) error {
+	if err := os.MkdirAll(cacheDir, 0750); err != nil {
+		return err
+	}
+	tokenPath := filepath.Join(cacheDir, "token")
+	tmpPath := tokenPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(token), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, tokenPath)
 }
 
 func getWithDefault(m map[string]string, key, defaultVal string) string {

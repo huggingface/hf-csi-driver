@@ -30,7 +30,7 @@ type MountOptions struct {
 	MetadataTtlMs    string
 	ReadOnly         bool
 	ExtraArgs        []string // passthrough flags from PV mountOptions
-	HFToken          string
+	TokenFile        string   // path to token file for credential refresh
 }
 
 type Mounter interface {
@@ -134,7 +134,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	cmd := exec.Command(hfMountBinary, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = buildEnv(opts.HFToken)
+	cmd.Env = buildEnv("")
 	stderrBuf := newTailWriter(2048)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrBuf)
@@ -352,6 +352,9 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 	if opts.ReadOnly {
 		globalArgs = append(globalArgs, "--read-only")
+	}
+	if opts.TokenFile != "" {
+		globalArgs = append(globalArgs, "--token-file", opts.TokenFile)
 	}
 
 	// ExtraArgs are global flags (--uid, --gid, etc.) that clap expects
