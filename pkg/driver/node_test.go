@@ -111,6 +111,7 @@ func TestNodePublishVolume_Success(t *testing.T) {
 			"sourceType": "bucket",
 			"sourceId":   "user/my-bucket",
 		},
+		Secrets: map[string]string{"token": "test-token"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -120,6 +121,9 @@ func TestNodePublishVolume_Success(t *testing.T) {
 	}
 	if !mock.mounted[target] {
 		t.Error("expected target to be mounted")
+	}
+	if mock.lastOpts.TokenFile == "" {
+		t.Error("expected TokenFile to be set")
 	}
 	// Mount flags are passed through as extra args.
 	expectedExtra := []string{"--uid=1000", "--gid=1000", "--read-only"}
@@ -151,6 +155,7 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 			"sourceType": "bucket",
 			"sourceId":   "user/b",
 		},
+		Secrets: map[string]string{"token": "test-token"},
 	}
 
 	// First call.
@@ -158,9 +163,71 @@ func TestNodePublishVolume_Idempotent(t *testing.T) {
 		t.Fatalf("first call: %v", err)
 	}
 
-	// Second call should succeed (idempotent).
+	// Second call (republish) should succeed and update token file.
+	req.Secrets["token"] = "refreshed-token"
 	if _, err := d.NodePublishVolume(context.Background(), req); err != nil {
 		t.Fatalf("second call: %v", err)
+	}
+}
+
+func TestNodePublishVolume_NoToken(t *testing.T) {
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+	target := filepath.Join(t.TempDir(), "target")
+
+	// No secrets: public repo, should succeed without token file.
+	resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+		},
+		VolumeContext: map[string]string{
+			"sourceType": "bucket",
+			"sourceId":   "user/b",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if mock.lastOpts.TokenFile != "" {
+		t.Errorf("expected no TokenFile for public repo, got %q", mock.lastOpts.TokenFile)
+	}
+}
+
+func TestNodePublishVolume_CustomTokenKey(t *testing.T) {
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+	target := filepath.Join(t.TempDir(), "target")
+
+	resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+		},
+		VolumeContext: map[string]string{
+			"sourceType": "bucket",
+			"sourceId":   "user/b",
+			"tokenKey":   "my-custom-key",
+		},
+		Secrets: map[string]string{"my-custom-key": "custom-token"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if mock.lastOpts.TokenFile == "" {
+		t.Error("expected TokenFile to be set for custom token key")
 	}
 }
 

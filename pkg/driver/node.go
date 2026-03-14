@@ -15,15 +15,17 @@ import (
 
 const (
 	defaultRevision = "main"
+	defaultTokenKey = "token"
 
-	volumeCtxSourceType      = "sourceType"
-	volumeCtxSourceID        = "sourceId"
-	volumeCtxRevision        = "revision"
-	volumeCtxHubEndpoint     = "hubEndpoint"
-	volumeCtxCacheDir        = "cacheDir"
-	volumeCtxCacheSize       = "cacheSize"
-	volumeCtxPollInterval    = "pollIntervalSecs"
-	volumeCtxMetadataTtl     = "metadataTtlMs"
+	volumeCtxSourceType   = "sourceType"
+	volumeCtxSourceID     = "sourceId"
+	volumeCtxRevision     = "revision"
+	volumeCtxHubEndpoint  = "hubEndpoint"
+	volumeCtxCacheDir     = "cacheDir"
+	volumeCtxCacheSize    = "cacheSize"
+	volumeCtxPollInterval = "pollIntervalSecs"
+	volumeCtxMetadataTtl  = "metadataTtlMs"
+	volumeCtxTokenKey     = "tokenKey"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -54,6 +56,10 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return nil, status.Error(codes.InvalidArgument, "volumeContext must contain sourceId")
 	}
 
+	// Resolve token from secrets (empty for public repos without a secret).
+	tokenKey := getWithDefault(volCtx, volumeCtxTokenKey, defaultTokenKey)
+	token := req.GetSecrets()[tokenKey]
+
 	// Check existing mount state.
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
@@ -69,12 +75,9 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	if mounted {
-		// Republish path (requiresRepublish=true): kubelet calls us periodically
-		// with fresh secrets. Write the updated token to the token file so
-		// hf-mount can pick it up without remounting.
-		if token := req.GetSecrets()["token"]; token != "" {
-			tokenFile := tokenFilePath(d.cacheBase, volumeID)
-			if err := writeTokenFile(tokenFile, token); err != nil {
+		// Republish: kubelet calls us with fresh secrets. Update the token file.
+		if token != "" {
+			if err := writeTokenFile(tokenFilePath(d.cacheBase, volumeID), token); err != nil {
 				klog.Warningf("Failed to refresh token file for %s: %v", volumeID, err)
 			} else {
 				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
@@ -89,7 +92,6 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	// Build mount options.
-	tokenFile := tokenFilePath(d.cacheBase, volumeID)
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
 		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
@@ -98,13 +100,18 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
-		HFToken:          req.GetSecrets()["token"],
-		TokenFile:        tokenFile,
+	}
+
+	// If a token is provided, write it to a file for hf-mount to read.
+	if token != "" {
+		tokenFile := tokenFilePath(d.cacheBase, volumeID)
+		if err := writeTokenFile(tokenFile, token); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to write token file: %v", err)
+		}
+		opts.TokenFile = tokenFile
 	}
 
 	// Pass mount flags straight through to hf-mount-fuse.
-	// Flags like "read-only", "uid=1000", "advanced-writes" become
-	// "--read-only", "--uid=1000", "--advanced-writes".
 	for _, flag := range volCap.GetMount().GetMountFlags() {
 		opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
 	}
@@ -198,7 +205,6 @@ func getWithDefault(m map[string]string, key, defaultVal string) string {
 }
 
 // sanitizeVolumeID encodes unsafe characters to prevent directory traversal and collisions.
-// url.PathEscape does not escape dots, so bare "." and ".." must be handled explicitly.
 func sanitizeVolumeID(id string) string {
 	s := url.PathEscape(id)
 	switch s {
@@ -210,5 +216,3 @@ func sanitizeVolumeID(id string) string {
 		return s
 	}
 }
-
-

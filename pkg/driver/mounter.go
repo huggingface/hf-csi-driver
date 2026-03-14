@@ -30,9 +30,8 @@ type MountOptions struct {
 	PollIntervalSecs string
 	MetadataTtlMs    string
 	ReadOnly         bool
-	ExtraArgs        []string // passthrough flags from PV mountOptions
-	HFToken          string
-	TokenFile        string // path to a file where the token is written for live refresh
+	ExtraArgs []string // passthrough flags from PV mountOptions
+	TokenFile string   // path to a file where the token is written for live refresh
 }
 
 type Mounter interface {
@@ -129,13 +128,6 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 		m.releaseTargetLock(target, tl)
 	}()
 
-	// Write the token to a file so hf-mount can re-read it on refresh.
-	if opts.TokenFile != "" && opts.HFToken != "" {
-		if err := writeTokenFile(opts.TokenFile, opts.HFToken); err != nil {
-			return fmt.Errorf("failed to write token file %s: %w", opts.TokenFile, err)
-		}
-	}
-
 	args, err := buildArgs(sourceType, sourceID, target, opts)
 	if err != nil {
 		return err
@@ -143,7 +135,7 @@ func (m *ProcessMounter) Mount(sourceType, sourceID, target string, opts MountOp
 
 	cmd := exec.Command(hfMountBinary, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = buildEnv(opts.HFToken)
+	cmd.Env = os.Environ()
 	stderrBuf := newTailWriter(2048)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrBuf)
@@ -313,28 +305,6 @@ func (m *ProcessMounter) killProcess(info *mountInfo) error {
 	return nil
 }
 
-// buildEnv returns the environment for the hf-mount-fuse process.
-// If token is non-empty it overrides any inherited HF_TOKEN.
-func buildEnv(token string) []string {
-	env := os.Environ()
-	if token == "" {
-		return env
-	}
-	// Replace or append HF_TOKEN.
-	set := false
-	for i, e := range env {
-		if strings.HasPrefix(e, "HF_TOKEN=") {
-			env[i] = "HF_TOKEN=" + token
-			set = true
-			break
-		}
-	}
-	if !set {
-		env = append(env, "HF_TOKEN="+token)
-	}
-	return env
-}
-
 func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string, error) {
 	switch sourceType {
 	case "bucket", "repo":
@@ -396,12 +366,12 @@ func writeTokenFile(path, token string) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.WriteString(token); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return err
 	}
 	return os.Rename(tmpName, path)
