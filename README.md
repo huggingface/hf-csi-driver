@@ -1,8 +1,8 @@
 # hf-csi-driver
 
-Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/hub/buckets) and model/dataset repos as FUSE volumes in pods.
+Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/huggingface_hub/guides/buckets) and model/dataset repos as FUSE volumes in pods.
 
-Wraps [hf-mount](https://github.com/huggingface-internal/hf-mount) (Rust FUSE filesystem) behind the CSI interface so kubelet can manage mount lifecycle automatically.
+Wraps [hf-mount](https://github.com/huggingface/hf-mount) (Rust FUSE filesystem) behind the CSI interface so kubelet can manage mount lifecycle automatically.
 
 ## How it works
 
@@ -28,9 +28,7 @@ Pod → kubelet → CSI NodePublishVolume → hf-mount-fuse → FUSE mount
 
 ```bash
 helm install hf-csi deploy/helm/hf-csi-driver/ \
-  --namespace kube-system \
-  --set image.repository=registry.internal.huggingface.tech/hf-csi-driver \
-  --set image.tag=latest
+  --namespace kube-system
 ```
 
 ### Plain manifests
@@ -49,7 +47,37 @@ kubectl apply -f deploy/kubernetes/daemonset.yaml
 kubectl create secret generic hf-token --from-literal=token=hf_xxxxx
 ```
 
-### 2. Mount a bucket (read-write)
+### 2. Ephemeral volume (simplest)
+
+No PV/PVC needed. The volume is created inline in the Pod spec and destroyed with the pod.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+    - name: app
+      image: python:3.12
+      command: ["python", "-c", "import os; print(os.listdir('/model'))"]
+      volumeMounts:
+        - name: gpt2
+          mountPath: /model
+          readOnly: true
+  volumes:
+    - name: gpt2
+      csi:
+        driver: hf.csi.huggingface.co
+        readOnly: true
+        volumeAttributes:
+          sourceType: repo
+          sourceId: openai-community/gpt2
+        nodePublishSecretRef:
+          name: hf-token
+```
+
+### 3. Mount a bucket (read-write, PV/PVC)
 
 ```yaml
 apiVersion: v1
@@ -85,7 +113,7 @@ spec:
   volumeName: my-bucket-pv
 ```
 
-### 3. Mount a model repo (read-only)
+### 4. Mount a model repo (read-only, PV/PVC)
 
 ```yaml
 apiVersion: v1
@@ -124,7 +152,7 @@ spec:
   volumeName: gpt2-pv
 ```
 
-### 4. Use in a pod
+### 5. Use in a pod
 
 ```yaml
 apiVersion: v1
@@ -177,7 +205,7 @@ mountOptions:
 
 ```bash
 # Docker image (multi-stage: Rust + Go)
-make docker-build IMAGE=registry.internal.huggingface.tech/hf-csi-driver VERSION=latest
+make docker-build
 
 # Go binary only
 make build
@@ -205,7 +233,7 @@ graph TD
     DEV --> MNT["/var/lib/kubelet/pods/.../mount"]
     MNT --> POD["Pod volume mount"]
 
-    FUSE -->|lazy fetch| CAS["CAS Storage"]
+    FUSE -->|lazy fetch| HF["HF Storage"]
     FUSE -->|metadata + commits| HUB["Hub API"]
 ```
 

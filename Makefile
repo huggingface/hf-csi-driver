@@ -11,7 +11,7 @@ test:
 	go test -v ./pkg/...
 
 docker-build:
-	docker build -t $(IMAGE):$(VERSION) --secret id=git_auth_token,env=GIT_AUTH_TOKEN .
+	docker build -t $(IMAGE):$(VERSION) .
 
 docker-push: docker-build
 	docker push $(IMAGE):$(VERSION)

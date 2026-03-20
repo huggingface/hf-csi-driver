@@ -90,12 +90,8 @@ jobs:
       KUBERNETES_SERVICE_HOST: ""
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout submodules
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.SUBMODULE_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
+        with:
+          submodules: recursive
 
       - uses: azure/setup-helm@v4
 

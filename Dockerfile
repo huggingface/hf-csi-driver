@@ -2,13 +2,7 @@
 FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /build
 COPY hf-mount/ .
-RUN --mount=type=secret,id=git_auth_token \
-    if [ -f /run/secrets/git_auth_token ]; then \
-      export GIT_CONFIG_COUNT=1 \
-             GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/git_auth_token)@github.com/.insteadOf" \
-             GIT_CONFIG_VALUE_0="https://github.com/"; \
-    fi && \
-    cargo build --release --bin hf-mount-fuse
+RUN cargo build --release --bin hf-mount-fuse
 
 # Stage 2: Build CSI driver (Go)
 FROM golang:1.25-bookworm AS go-builder
