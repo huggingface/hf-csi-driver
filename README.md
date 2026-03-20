@@ -1,8 +1,8 @@
 # hf-csi-driver
 
-Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/hub/buckets) and model/dataset repos as FUSE volumes in pods.
+Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/huggingface_hub/guides/buckets) and model/dataset repos as FUSE volumes in pods.
 
-Wraps [hf-mount](https://github.com/huggingface-internal/hf-mount) (Rust FUSE filesystem) behind the CSI interface so kubelet can manage mount lifecycle automatically.
+Wraps [hf-mount](https://github.com/huggingface/hf-mount) (Rust FUSE filesystem) behind the CSI interface so kubelet can manage mount lifecycle automatically.
 
 ## How it works
 
@@ -28,9 +28,7 @@ Pod → kubelet → CSI NodePublishVolume → hf-mount-fuse → FUSE mount
 
 ```bash
 helm install hf-csi deploy/helm/hf-csi-driver/ \
-  --namespace kube-system \
-  --set image.repository=registry.internal.huggingface.tech/hf-csi-driver \
-  --set image.tag=latest
+  --namespace kube-system
 ```
 
 ### Plain manifests
@@ -177,7 +175,7 @@ mountOptions:
 
 ```bash
 # Docker image (multi-stage: Rust + Go)
-make docker-build IMAGE=registry.internal.huggingface.tech/hf-csi-driver VERSION=latest
+make docker-build
 
 # Go binary only
 make build
@@ -205,7 +203,7 @@ graph TD
     DEV --> MNT["/var/lib/kubelet/pods/.../mount"]
     MNT --> POD["Pod volume mount"]
 
-    FUSE -->|lazy fetch| CAS["CAS Storage"]
+    FUSE -->|lazy fetch| HF["HF Storage"]
     FUSE -->|metadata + commits| HUB["Hub API"]
 ```
 
