@@ -47,7 +47,37 @@ kubectl apply -f deploy/kubernetes/daemonset.yaml
 kubectl create secret generic hf-token --from-literal=token=hf_xxxxx
 ```
 
-### 2. Mount a bucket (read-write)
+### 2. Ephemeral volume (simplest)
+
+No PV/PVC needed. The volume is created inline in the Pod spec and destroyed with the pod.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+    - name: app
+      image: python:3.12
+      command: ["python", "-c", "import os; print(os.listdir('/model'))"]
+      volumeMounts:
+        - name: gpt2
+          mountPath: /model
+          readOnly: true
+  volumes:
+    - name: gpt2
+      csi:
+        driver: hf.csi.huggingface.co
+        readOnly: true
+        volumeAttributes:
+          sourceType: repo
+          sourceId: openai-community/gpt2
+        nodePublishSecretRef:
+          name: hf-token
+```
+
+### 3. Mount a bucket (read-write, PV/PVC)
 
 ```yaml
 apiVersion: v1
@@ -83,7 +113,7 @@ spec:
   volumeName: my-bucket-pv
 ```
 
-### 3. Mount a model repo (read-only)
+### 4. Mount a model repo (read-only, PV/PVC)
 
 ```yaml
 apiVersion: v1
@@ -122,7 +152,7 @@ spec:
   volumeName: gpt2-pv
 ```
 
-### 4. Use in a pod
+### 5. Use in a pod
 
 ```yaml
 apiVersion: v1
