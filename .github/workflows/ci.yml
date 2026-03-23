@@ -9,7 +9,7 @@ jobs:
   lint:
     name: Lint
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,7 +22,7 @@ jobs:
   test:
     name: Test
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -33,7 +33,7 @@ jobs:
   build:
     name: Build
     runs-on:
-      group: cpu-high
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,7 +44,7 @@ jobs:
   helm-lint:
     name: Helm Lint
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -53,7 +53,7 @@ jobs:
   kind-test:
     name: Kind Integration
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     env:
       KUBERNETES_SERVICE_HOST: ""
     steps:
@@ -84,7 +84,7 @@ jobs:
   e2e-test:
     name: E2E Mount Test
     runs-on:
-      group: cpu-high
+      group: aws-general-8-plus
     env:
       # Prevent kubectl from using ARC runner's in-cluster config
       KUBERNETES_SERVICE_HOST: ""
