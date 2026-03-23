@@ -1,6 +1,6 @@
 # hf-csi-driver
 
-Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/huggingface_hub/guides/buckets) and model/dataset repos as FUSE volumes in pods.
+Kubernetes CSI driver for mounting [Hugging Face Buckets](https://huggingface.co/docs/hub/storage-buckets) and model/dataset repos as FUSE volumes in pods.
 
 Wraps [hf-mount](https://github.com/huggingface/hf-mount) (Rust FUSE filesystem) behind the CSI interface so kubelet can manage mount lifecycle automatically.
 
@@ -25,6 +25,13 @@ Pod → kubelet → CSI NodePublishVolume → hf-mount-fuse → FUSE mount
 ## Installation
 
 ### Helm (recommended)
+
+```bash
+helm install hf-csi oci://ghcr.io/huggingface/charts/hf-csi-driver \
+  --namespace kube-system
+```
+
+Or from a local checkout:
 
 ```bash
 helm install hf-csi deploy/helm/hf-csi-driver/ \
