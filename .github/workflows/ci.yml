@@ -52,12 +52,15 @@ jobs:
 
   kind-test:
     name: Kind Integration
+    needs: build
     runs-on:
       group: aws-general-8-plus
     env:
       KUBERNETES_SERVICE_HOST: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: azure/setup-helm@v4
 
       - name: Create Kind cluster
@@ -68,10 +71,20 @@ jobs:
             --kubeconfig "$HOME/.kube/kind-config"
           echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
 
+      - name: Build and load image
+        run: |
+          docker build -t hf-csi-driver:test .
+          ./kind load docker-image hf-csi-driver:test --name csi-test
+
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default
+            --namespace default \
+            --set image.repository=hf-csi-driver \
+            --set image.tag=test \
+            --set image.pullPolicy=Never
+          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
+            --namespace default --timeout=60s
 
       - name: Verify resources
         run: |
@@ -80,6 +93,8 @@ jobs:
           kubectl -n default get serviceaccount hf-csi-hf-csi-driver
           kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
           kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
+          # Verify pods are actually running
+          kubectl -n default get pods -l app=hf-csi-node -o jsonpath='{.items[0].status.phase}' | grep Running
 
   e2e-test:
     name: E2E Mount Test
