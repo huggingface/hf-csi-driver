@@ -9,7 +9,7 @@ jobs:
   lint:
     name: Lint
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,7 +22,7 @@ jobs:
   test:
     name: Test
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -33,7 +33,7 @@ jobs:
   build:
     name: Build
     runs-on:
-      group: cpu-high
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,49 +44,18 @@ jobs:
   helm-lint:
     name: Helm Lint
     runs-on:
-      group: cpu-low
+      group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/hf-csi-driver/
 
-  kind-test:
-    name: Kind Integration
-    runs-on:
-      group: cpu-low
-    env:
-      KUBERNETES_SERVICE_HOST: ""
-    steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
-
-      - name: Create Kind cluster
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x ./kind
-          ./kind create cluster --name csi-test --wait 60s \
-            --kubeconfig "$HOME/.kube/kind-config"
-          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
-
-      - name: Install chart
-        run: |
-          helm install hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default
-
-      - name: Verify resources
-        run: |
-          kubectl get csidriver hf.csi.huggingface.co
-          kubectl -n default get daemonset hf-csi-hf-csi-driver-node
-          kubectl -n default get serviceaccount hf-csi-hf-csi-driver
-          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
-          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
-
   e2e-test:
-    name: E2E Mount Test
+    name: E2E Test
+    needs: [build, helm-lint]
     runs-on:
-      group: cpu-high
+      group: aws-general-8-plus
     env:
-      # Prevent kubectl from using ARC runner's in-cluster config
       KUBERNETES_SERVICE_HOST: ""
     steps:
       - uses: actions/checkout@v4
@@ -130,7 +99,14 @@ jobs:
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
 
-      - name: Deploy test pod
+      - name: Verify resources
+        run: |
+          kubectl get csidriver hf.csi.huggingface.co
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
+          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
+          kubectl -n default get pods -l app=hf-csi-node -o jsonpath='{.items[0].status.phase}' | grep Running
+
+      - name: Mount test (public repo, no token)
         run: |
           kubectl create secret generic hf-token --from-literal=token=''
 
@@ -192,24 +168,15 @@ jobs:
 
       - name: Verify mount
         run: |
-          echo "=== Pod logs ==="
-          kubectl logs test-mount
-
-          # ls output must contain config.json
           kubectl logs test-mount | grep config.json
-
-          # cat output must contain valid JSON with model_type
           kubectl logs test-mount | grep model_type
 
       - name: Debug on failure
         if: failure()
         run: |
           echo "=== CSI driver logs ==="
-          kubectl logs -l app=hf-csi-node \
-            --tail=100 -c hf-csi-plugin
+          kubectl logs -l app=hf-csi-node --tail=100 -c hf-csi-plugin
           echo "=== Pod describe ==="
           kubectl describe pod test-mount
-          echo "=== PV/PVC status ==="
-          kubectl get pv,pvc
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
