@@ -41,6 +41,10 @@ spec:
             - --mount-mode={{ .Values.mountMode }}
             {{- if eq .Values.mountMode "pod" }}
             - --mount-image={{ .Values.image.repository }}:{{ .Values.image.tag }}
+            - --mount-pull-policy={{ .Values.image.pullPolicy }}
+            {{- with .Values.imagePullSecrets }}
+            - --mount-pull-secrets={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}{{ end }}
+            {{- end }}
             - --namespace={{ .Release.Namespace }}
             {{- end }}
             - --v={{ .Values.logVerbosity }}

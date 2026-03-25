@@ -46,14 +46,16 @@ const (
 //   - Pod restarts (container restartCount change): re-bind stale targets
 //   - Pod deletion: clean up stale bind mounts (after references drain)
 type PodMounter struct {
-	mu        sync.Mutex
-	client    kubernetes.Interface
-	namespace string
-	nodeID    string
-	image     string
-	cacheDir  string
-	checker   mount.Interface
-	crd       *hfMountClient
+	mu               sync.Mutex
+	client           kubernetes.Interface
+	namespace        string
+	nodeID           string
+	image            string
+	imagePullPolicy  corev1.PullPolicy
+	imagePullSecrets []corev1.LocalObjectReference
+	cacheDir         string
+	checker          mount.Interface
+	crd              *hfMountClient
 
 	// binds tracks target -> source mount path for bind-mounted volumes.
 	binds map[string]string
@@ -66,19 +68,21 @@ type PodMounter struct {
 	sourceLocks map[string]*refMutex
 }
 
-func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image, cacheDir string) *PodMounter {
+func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image string, pullPolicy corev1.PullPolicy, pullSecrets []corev1.LocalObjectReference, cacheDir string) *PodMounter {
 	checker := mount.New("")
 	return &PodMounter{
-		client:       client,
-		namespace:    namespace,
-		nodeID:       nodeID,
-		image:        image,
-		cacheDir:     cacheDir,
-		checker:      checker,
-		crd:          newHFMountClient(dynClient, namespace),
-		binds:        make(map[string]string),
-		sourceLocks:  make(map[string]*refMutex),
-		getMountRefs: checker.GetMountRefs,
+		client:           client,
+		namespace:        namespace,
+		nodeID:           nodeID,
+		image:            image,
+		imagePullPolicy:  pullPolicy,
+		imagePullSecrets: pullSecrets,
+		cacheDir:         cacheDir,
+		checker:         checker,
+		crd:             newHFMountClient(dynClient, namespace),
+		binds:           make(map[string]string),
+		sourceLocks:     make(map[string]*refMutex),
+		getMountRefs:    checker.GetMountRefs,
 	}
 }
 
@@ -118,6 +122,30 @@ func (m *PodMounter) Start(stopCh <-chan struct{}) {
 
 	podInformer := factory.Core().V1().Pods().Informer()
 	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			pod, ok := obj.(*corev1.Pod)
+			if !ok {
+				return
+			}
+			// Catch pods that Recover() may have skipped (mount not ready at startup).
+			mountPath := pod.Annotations[annotMountPath]
+			if mountPath == "" || pod.Status.Phase != corev1.PodRunning {
+				return
+			}
+			m.mu.Lock()
+			hasBinds := false
+			for _, source := range m.binds {
+				if source == mountPath {
+					hasBinds = true
+					break
+				}
+			}
+			m.mu.Unlock()
+			if !hasBinds {
+				klog.Infof("Informer add: pod %s has no tracked binds, attempting late adoption for %s", pod.Name, mountPath)
+				go m.lateAdopt(mountPath)
+			}
+		},
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod, ok1 := oldObj.(*corev1.Pod)
 			newPod, ok2 := newObj.(*corev1.Pod)
@@ -290,6 +318,42 @@ func (m *PodMounter) handlePodDelete(pod *corev1.Pod) {
 		klog.Warningf("Cleaning stale bind mount at %s (source pod deleted)", target)
 		_ = fuseUnmount(target)
 	}
+}
+
+// lateAdopt handles pods that Recover() may have skipped (e.g. mount not
+// ready at startup). When the informer first sees them running, we try to
+// rebuild binds from mountinfo.
+func (m *PodMounter) lateAdopt(mountPath string) {
+	// Wait briefly for mount to appear.
+	for i := 0; i < 15; i++ {
+		mounted, err := m.checker.IsMountPoint(mountPath)
+		if err == nil && mounted {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+
+	mounted, _ := m.checker.IsMountPoint(mountPath)
+	if !mounted {
+		return
+	}
+
+	refs, err := m.getMountRefs(mountPath)
+	if err != nil {
+		klog.Warningf("Late adopt: cannot get mount refs for %s: %v", mountPath, err)
+		return
+	}
+
+	m.mu.Lock()
+	for _, ref := range refs {
+		if ref != mountPath {
+			if _, exists := m.binds[ref]; !exists {
+				m.binds[ref] = mountPath
+				klog.Infof("Late adopt: restored bind %s -> %s", ref, mountPath)
+			}
+		}
+	}
+	m.mu.Unlock()
 }
 
 // cleanupSource handles cleanup when a mount pod enters a terminal phase or
@@ -592,10 +656,21 @@ func (m *PodMounter) Recover() error {
 			if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 				klog.Warningf("Recovery: pod %s is %s with no mount, deleting", pod.Name, pod.Status.Phase)
 				_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
-			} else {
-				klog.Infof("Recovery: pod %s running but mount not ready yet at %s", pod.Name, mountPath)
+				continue
 			}
-			continue
+			// Pod is running but mount not ready yet. Wait up to 30s for it.
+			klog.Infof("Recovery: pod %s running, waiting for mount at %s", pod.Name, mountPath)
+			for i := 0; i < 30; i++ {
+				time.Sleep(time.Second)
+				mounted, err = m.checker.IsMountPoint(mountPath)
+				if err == nil && mounted {
+					break
+				}
+			}
+			if !mounted {
+				klog.Warningf("Recovery: mount never appeared at %s for pod %s, skipping", mountPath, pod.Name)
+				continue
+			}
 		}
 
 		// Rebuild binds: find all mount references to this FUSE source.
@@ -663,14 +738,16 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 					},
 				},
 			},
+			ImagePullSecrets: m.imagePullSecrets,
 			Tolerations: []corev1.Toleration{{
 				Operator: corev1.TolerationOpExists,
 			}},
 			Containers: []corev1.Container{{
-				Name:    "hf-mount",
-				Image:   m.image,
-				Command: []string{hfMountBinary},
-				Args:    args,
+				Name:            "hf-mount",
+				Image:           m.image,
+				ImagePullPolicy: m.imagePullPolicy,
+				Command:         []string{hfMountBinary},
+				Args:            args,
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: ptr.To(true),
 				},
