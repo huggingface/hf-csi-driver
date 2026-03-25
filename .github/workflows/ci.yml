@@ -193,6 +193,68 @@ jobs:
             kubectl get hfmounts -n default -o yaml
           fi
 
+      - name: "Resilience: create long-running workload"
+        run: |
+          kubectl delete pod test-mount --ignore-not-found
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-resilience
+          spec:
+            containers:
+            - name: reader
+              image: busybox:latest
+              command: ["sh", "-c", "while true; do cat /data/config.json > /dev/null && echo OK; sleep 2; done"]
+              volumeMounts:
+              - name: vol
+                mountPath: /data
+                readOnly: true
+            volumes:
+            - name: vol
+              persistentVolumeClaim:
+                claimName: test-pvc
+            restartPolicy: Always
+          EOF
+          kubectl wait pod/test-resilience --for=condition=Ready --timeout=120s
+          echo "Workload running, verifying initial read..."
+          kubectl exec test-resilience -- cat /data/config.json | grep model_type
+
+      - name: "Resilience: restart CSI driver DaemonSet"
+        run: |
+          echo "=== Restarting CSI driver ==="
+          kubectl rollout restart daemonset hf-csi-hf-csi-driver-node -n default
+          kubectl rollout status daemonset hf-csi-hf-csi-driver-node -n default --timeout=120s
+
+          echo "=== Waiting for driver to recover ==="
+          sleep 10
+
+          echo "=== Checking mount pod survived ==="
+          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}')
+          if [ -z "$MOUNT_PODS" ]; then
+            echo "ERROR: Mount pods disappeared after CSI driver restart"
+            exit 1
+          fi
+          echo "Mount pods still alive: $MOUNT_PODS"
+
+          echo "=== Verifying workload can still read ==="
+          kubectl exec test-resilience -- cat /data/config.json | grep model_type
+          echo "SUCCESS: Workload survived CSI driver restart"
+
+      - name: "Resilience: kill mount pod"
+        run: |
+          MOUNT_POD=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[0].metadata.name}')
+          echo "Killing mount pod: $MOUNT_POD"
+          kubectl delete pod "$MOUNT_POD" -n default --grace-period=0 --force
+
+          echo "Waiting for mount pod to be recreated by RestartPolicy..."
+          sleep 30
+
+          echo "=== Checking mount pods ==="
+          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default
+          echo "=== CSI driver logs after mount pod kill ==="
+          kubectl logs -l app=hf-csi-node --tail=30 -c hf-csi-plugin -n default
+
       - name: Debug on failure
         if: failure()
         run: |
