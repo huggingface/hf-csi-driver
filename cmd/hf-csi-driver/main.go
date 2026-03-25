@@ -25,8 +25,9 @@ func main() {
 		mountMode   = flag.String("mount-mode", "process", "Mount mode: 'process' (child process) or 'pod' (dedicated mount pod)")
 		mountImage      = flag.String("mount-image", "", "Container image for mount pods (required when mount-mode=pod)")
 		mountPullPolicy  = flag.String("mount-pull-policy", "IfNotPresent", "Image pull policy for mount pods")
-		mountPullSecrets = flag.String("mount-pull-secrets", "", "Comma-separated image pull secret names for mount pods")
-		namespace        = flag.String("namespace", "kube-system", "Namespace for mount pods")
+		mountPullSecrets  = flag.String("mount-pull-secrets", "", "Comma-separated image pull secret names for mount pods")
+		mountServiceAcct  = flag.String("mount-service-account", "hf-csi-driver", "Service account for mount pods")
+		namespace         = flag.String("namespace", "kube-system", "Namespace for mount pods")
 		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -75,7 +76,7 @@ func main() {
 				}
 			}
 		}
-		mounter = driver.NewPodMounter(client, dynClient, *namespace, *nodeID, *mountImage, corev1.PullPolicy(*mountPullPolicy), pullSecrets, *cacheDir)
+		mounter = driver.NewPodMounter(client, dynClient, *namespace, *nodeID, *mountImage, corev1.PullPolicy(*mountPullPolicy), pullSecrets, *mountServiceAcct, *cacheDir)
 	default:
 		klog.Fatalf("Unknown mount mode %q (must be 'process' or 'pod')", *mountMode)
 	}

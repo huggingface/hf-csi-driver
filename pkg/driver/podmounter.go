@@ -53,6 +53,7 @@ type PodMounter struct {
 	image            string
 	imagePullPolicy  corev1.PullPolicy
 	imagePullSecrets []corev1.LocalObjectReference
+	serviceAccount   string
 	cacheDir         string
 	checker          mount.Interface
 	crd              *hfMountClient
@@ -68,7 +69,7 @@ type PodMounter struct {
 	sourceLocks map[string]*refMutex
 }
 
-func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image string, pullPolicy corev1.PullPolicy, pullSecrets []corev1.LocalObjectReference, cacheDir string) *PodMounter {
+func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image string, pullPolicy corev1.PullPolicy, pullSecrets []corev1.LocalObjectReference, serviceAccount, cacheDir string) *PodMounter {
 	checker := mount.New("")
 	return &PodMounter{
 		client:           client,
@@ -77,7 +78,8 @@ func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, nam
 		image:            image,
 		imagePullPolicy:  pullPolicy,
 		imagePullSecrets: pullSecrets,
-		cacheDir:         cacheDir,
+		serviceAccount:  serviceAccount,
+		cacheDir:        cacheDir,
 		checker:         checker,
 		crd:             newHFMountClient(dynClient, namespace),
 		binds:           make(map[string]string),
@@ -738,7 +740,8 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 					},
 				},
 			},
-			ImagePullSecrets: m.imagePullSecrets,
+			ServiceAccountName: m.serviceAccount,
+			ImagePullSecrets:   m.imagePullSecrets,
 			Tolerations: []corev1.Toleration{{
 				Operator: corev1.TolerationOpExists,
 			}},

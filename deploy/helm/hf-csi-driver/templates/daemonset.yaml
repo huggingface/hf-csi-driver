@@ -45,6 +45,7 @@ spec:
             {{- with .Values.imagePullSecrets }}
             - --mount-pull-secrets={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}{{ end }}
             {{- end }}
+            - --mount-service-account={{ include "hf-csi-driver.fullname" . }}
             - --namespace={{ .Release.Namespace }}
             {{- end }}
             - --v={{ .Values.logVerbosity }}
