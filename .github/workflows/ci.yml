@@ -184,16 +184,14 @@ jobs:
           echo "Found mount pods: $MOUNT_PODS"
 
           echo "=== HFMount CRDs ==="
-          kubectl get hfmounts -n default
-          HFMOUNTS=$(kubectl get hfmounts -n default -o jsonpath='{.items[*].metadata.name}')
+          kubectl get hfmounts -n default || true
+          HFMOUNTS=$(kubectl get hfmounts -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
           if [ -z "$HFMOUNTS" ]; then
-            echo "ERROR: No HFMount CRDs found"
-            exit 1
+            echo "WARNING: No HFMount CRDs found (CRD tracking is best-effort)"
+          else
+            echo "Found HFMounts: $HFMOUNTS"
+            kubectl get hfmounts -n default -o yaml
           fi
-          echo "Found HFMounts: $HFMOUNTS"
-
-          echo "=== HFMount details ==="
-          kubectl get hfmounts -n default -o yaml
 
       - name: Debug on failure
         if: failure()

@@ -124,53 +124,11 @@ func (c *hfMountClient) delete(ctx context.Context, name string) error {
 	return c.resource().Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-// get returns the HFMount CR or nil if not found.
-func (c *hfMountClient) get(ctx context.Context, name string) (*unstructured.Unstructured, error) {
-	return c.resource().Get(ctx, name, metav1.GetOptions{})
-}
-
-// listForNode returns all HFMount CRs for a given node.
-func (c *hfMountClient) listForNode(ctx context.Context, nodeName string) ([]unstructured.Unstructured, error) {
-	list, err := c.resource().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	var result []unstructured.Unstructured
-	for _, item := range list.Items {
-		spec, _ := item.Object["spec"].(map[string]interface{})
-		if spec["nodeName"] == nodeName {
-			result = append(result, item)
-		}
-	}
-	return result, nil
-}
-
-// getTargets returns the targets list from an HFMount object.
-func getTargets(obj *unstructured.Unstructured) []string {
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	targets, _ := spec["targets"].([]interface{})
-	var result []string
-	for _, t := range targets {
-		if s, ok := t.(string); ok {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-// getSpecField returns a string field from the HFMount spec.
-func getSpecField(obj *unstructured.Unstructured, field string) string {
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	v, _ := spec[field].(string)
-	return v
-}
-
-// logCRDError logs CRD operation errors at a low verbosity level.
+// logCRDError logs CRD operation errors.
 // CRD operations are best-effort; the in-memory binds map is the primary state.
 func logCRDError(op, name string, err error) {
 	if err != nil {
-		klog.V(2).Infof("HFMount CRD %s %s: %v", op, name, err)
+		klog.Warningf("HFMount CRD %s %s: %v", op, name, err)
 	}
 }
 
