@@ -247,7 +247,7 @@ jobs:
           echo "Killing mount pod: $MOUNT_POD"
           kubectl delete pod "$MOUNT_POD" -n default --grace-period=0 --force
 
-          echo "Waiting for mount pod to be recreated by RestartPolicy..."
+          echo "Waiting for cleanup..."
           sleep 30
 
           echo "=== Checking mount pods ==="
@@ -255,13 +255,218 @@ jobs:
           echo "=== CSI driver logs after mount pod kill ==="
           kubectl logs -l app=hf-csi-node --tail=30 -c hf-csi-plugin -n default
 
+      - name: "Unmount cleanup"
+        run: |
+          echo "=== Deleting workload pod ==="
+          kubectl delete pod test-resilience --timeout=60s
+
+          echo "=== Waiting for mount pod cleanup ==="
+          for i in $(seq 1 30); do
+            MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+            if [ -z "$MOUNT_PODS" ]; then
+              echo "Mount pods cleaned up after ${i}s"
+              break
+            fi
+            sleep 2
+          done
+
+          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+          if [ -n "$MOUNT_PODS" ]; then
+            echo "WARNING: Mount pods still exist after unmount: $MOUNT_PODS"
+          else
+            echo "SUCCESS: All mount pods cleaned up"
+          fi
+
+      - name: "Remount after unmount"
+        run: |
+          echo "=== Creating new workload with same volume ==="
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-remount
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sh", "-c", "cat /data/config.json"]
+              volumeMounts:
+              - name: vol
+                mountPath: /data
+                readOnly: true
+            volumes:
+            - name: vol
+              persistentVolumeClaim:
+                claimName: test-pvc
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-remount --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+          kubectl logs test-remount | grep model_type
+          echo "SUCCESS: Remount after unmount works"
+
+      - name: "Multiple volumes"
+        run: |
+          echo "=== Creating second volume (different repo) ==="
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: test-pv-2
+          spec:
+            capacity:
+              storage: 1Gi
+            accessModes: [ReadOnlyMany]
+            persistentVolumeReclaimPolicy: Retain
+            csi:
+              driver: hf.csi.huggingface.co
+              volumeHandle: test-distilgpt2
+              nodePublishSecretRef:
+                name: hf-token
+                namespace: default
+              volumeAttributes:
+                sourceType: repo
+                sourceId: distilbert/distilgpt2
+                revision: main
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: test-pvc-2
+          spec:
+            accessModes: [ReadOnlyMany]
+            storageClassName: ""
+            resources:
+              requests:
+                storage: 1Gi
+            volumeName: test-pv-2
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-multi
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sh", "-c", "ls /data1 && ls /data2 && echo BOTH_OK"]
+              volumeMounts:
+              - name: vol1
+                mountPath: /data1
+                readOnly: true
+              - name: vol2
+                mountPath: /data2
+                readOnly: true
+            volumes:
+            - name: vol1
+              persistentVolumeClaim:
+                claimName: test-pvc
+            - name: vol2
+              persistentVolumeClaim:
+                claimName: test-pvc-2
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-multi --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+          kubectl logs test-multi | grep BOTH_OK
+
+          echo "=== Verifying two separate mount pods ==="
+          MOUNT_COUNT=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' | wc -w)
+          echo "Mount pods: $MOUNT_COUNT"
+          if [ "$MOUNT_COUNT" -lt 2 ]; then
+            echo "WARNING: Expected at least 2 mount pods for 2 volumes, got $MOUNT_COUNT"
+          fi
+          echo "SUCCESS: Multiple volumes work"
+
+      - name: "Ephemeral volume"
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-ephemeral
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sh", "-c", "ls /model && cat /model/config.json"]
+              volumeMounts:
+              - name: model
+                mountPath: /model
+                readOnly: true
+            volumes:
+            - name: model
+              csi:
+                driver: hf.csi.huggingface.co
+                volumeAttributes:
+                  sourceType: repo
+                  sourceId: openai-community/gpt2
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-ephemeral --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+          kubectl logs test-ephemeral | grep model_type
+          echo "SUCCESS: Ephemeral volume works"
+
+      - name: "Process mode fallback"
+        run: |
+          echo "=== Installing chart in process mode ==="
+          helm upgrade hf-csi deploy/helm/hf-csi-driver/ \
+            --namespace default \
+            --set image.repository=hf-csi-driver \
+            --set image.tag=test \
+            --set image.pullPolicy=Never \
+            --set mountMode=process
+          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
+            --namespace default --timeout=60s
+
+          echo "=== Cleaning up old resources ==="
+          kubectl delete pod test-remount test-multi test-ephemeral --ignore-not-found
+          kubectl delete pvc test-pvc-2 --ignore-not-found
+          kubectl delete pv test-pv-2 --ignore-not-found
+
+          echo "=== Mounting in process mode ==="
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-process-mode
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sh", "-c", "cat /data/config.json"]
+              volumeMounts:
+              - name: vol
+                mountPath: /data
+                readOnly: true
+            volumes:
+            - name: vol
+              persistentVolumeClaim:
+                claimName: test-pvc
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-process-mode --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+          kubectl logs test-process-mode | grep model_type
+          echo "SUCCESS: Process mode fallback works"
+
+          echo "=== Verifying NO mount pods in process mode ==="
+          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+          if [ -n "$MOUNT_PODS" ]; then
+            echo "WARNING: Found mount pods in process mode (leftover?): $MOUNT_PODS"
+          else
+            echo "SUCCESS: No mount pods in process mode (as expected)"
+          fi
+
       - name: Debug on failure
         if: failure()
         run: |
           echo "=== CSI driver logs ==="
           kubectl logs -l app=hf-csi-node --tail=100 -c hf-csi-plugin
           echo "=== Pod describe ==="
-          kubectl describe pod test-mount
+          kubectl describe pod test-mount 2>/dev/null || true
+          kubectl describe pod test-resilience 2>/dev/null || true
+          kubectl describe pod test-remount 2>/dev/null || true
+          kubectl describe pod test-multi 2>/dev/null || true
+          kubectl describe pod test-ephemeral 2>/dev/null || true
+          kubectl describe pod test-process-mode 2>/dev/null || true
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
           echo "=== Mount pods ==="
