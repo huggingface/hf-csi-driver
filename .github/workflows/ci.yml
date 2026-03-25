@@ -95,7 +95,8 @@ jobs:
             --namespace default \
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
-            --set image.pullPolicy=Never
+            --set image.pullPolicy=Never \
+            --set mountMode=pod
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
 
@@ -171,6 +172,29 @@ jobs:
           kubectl logs test-mount | grep config.json
           kubectl logs test-mount | grep model_type
 
+      - name: Verify mount pod and HFMount CRD
+        run: |
+          echo "=== Mount pods ==="
+          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default
+          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}')
+          if [ -z "$MOUNT_PODS" ]; then
+            echo "ERROR: No mount pods found"
+            exit 1
+          fi
+          echo "Found mount pods: $MOUNT_PODS"
+
+          echo "=== HFMount CRDs ==="
+          kubectl get hfmounts -n default
+          HFMOUNTS=$(kubectl get hfmounts -n default -o jsonpath='{.items[*].metadata.name}')
+          if [ -z "$HFMOUNTS" ]; then
+            echo "ERROR: No HFMount CRDs found"
+            exit 1
+          fi
+          echo "Found HFMounts: $HFMOUNTS"
+
+          echo "=== HFMount details ==="
+          kubectl get hfmounts -n default -o yaml
+
       - name: Debug on failure
         if: failure()
         run: |
@@ -180,3 +204,7 @@ jobs:
           kubectl describe pod test-mount
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
+          echo "=== Mount pods ==="
+          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o yaml 2>/dev/null || true
+          echo "=== HFMount CRDs ==="
+          kubectl get hfmounts -n default -o yaml 2>/dev/null || true
