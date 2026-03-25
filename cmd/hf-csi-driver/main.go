@@ -9,6 +9,8 @@ import (
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -17,6 +19,9 @@ func main() {
 		endpoint    = flag.String("endpoint", "unix:///var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock", "CSI endpoint")
 		nodeID      = flag.String("node-id", "", "Node ID")
 		cacheDir    = flag.String("cache-dir", driver.DefaultCacheBase, "Base directory for volume caches")
+		mountMode   = flag.String("mount-mode", "process", "Mount mode: 'process' (child process) or 'pod' (dedicated mount pod)")
+		mountImage  = flag.String("mount-image", "", "Container image for mount pods (required when mount-mode=pod)")
+		namespace   = flag.String("namespace", "kube-system", "Namespace for mount pods")
 		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 
@@ -36,9 +41,29 @@ func main() {
 		*nodeID = hostname
 	}
 
-	drv := driver.NewDriver(*endpoint, *nodeID, *cacheDir)
+	var mounter driver.Mounter
+	switch *mountMode {
+	case "process":
+		mounter = driver.NewProcessMounter()
+	case "pod":
+		if *mountImage == "" {
+			klog.Fatal("--mount-image is required when --mount-mode=pod")
+		}
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			klog.Fatalf("Failed to get in-cluster config: %v", err)
+		}
+		client, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			klog.Fatalf("Failed to create Kubernetes client: %v", err)
+		}
+		mounter = driver.NewPodMounter(client, *namespace, *nodeID, *mountImage, *cacheDir)
+	default:
+		klog.Fatalf("Unknown mount mode %q (must be 'process' or 'pod')", *mountMode)
+	}
 
-	// Signal handler.
+	drv := driver.NewDriver(*endpoint, *nodeID, *cacheDir, mounter)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -48,8 +73,6 @@ func main() {
 	}()
 
 	if err := drv.Run(); err != nil {
-		// GracefulStop causes Serve to return grpc.ErrServerStopped,
-		// which is a normal shutdown, not a fatal error.
 		if err == grpc.ErrServerStopped {
 			klog.Info("gRPC server stopped")
 		} else {

@@ -38,6 +38,11 @@ type Mounter interface {
 	Mount(sourceType, sourceID, target string, opts MountOptions) error
 	Unmount(target string) error
 	IsMountPoint(target string) (bool, error)
+	// Recover re-adopts existing mounts from a previous driver instance.
+	Recover() error
+	// Start launches background goroutines (e.g. pod watchers). The stopCh
+	// channel signals shutdown. No-op for ProcessMounter.
+	Start(stopCh <-chan struct{})
 }
 
 type mountInfo struct {
@@ -274,6 +279,12 @@ func (m *ProcessMounter) Unmount(target string) error {
 func (m *ProcessMounter) IsMountPoint(target string) (bool, error) {
 	return m.checker.IsMountPoint(target)
 }
+
+func (m *ProcessMounter) Recover() error {
+	return nil
+}
+
+func (m *ProcessMounter) Start(_ <-chan struct{}) {}
 
 // killProcess sends SIGTERM then SIGKILL to the process group.
 // Must NOT be called while holding m.mu (it waits on info.done which the

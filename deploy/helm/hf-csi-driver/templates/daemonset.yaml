@@ -38,6 +38,11 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir={{ .Values.cacheDir }}
+            - --mount-mode={{ .Values.mountMode }}
+            {{- if eq .Values.mountMode "pod" }}
+            - --mount-image={{ .Values.image.repository }}:{{ .Values.image.tag }}
+            - --namespace={{ .Release.Namespace }}
+            {{- end }}
             - --v={{ .Values.logVerbosity }}
           env:
             - name: CSI_NODE_NAME
@@ -54,6 +59,9 @@ spec:
               mountPath: /csi
             - name: cache-dir
               mountPath: {{ .Values.cacheDir }}
+            - name: mnt-dir
+              mountPath: /var/lib/hf-csi-driver/mnt
+              mountPropagation: Bidirectional
           ports:
             - containerPort: 9808
               name: healthz
@@ -108,4 +116,8 @@ spec:
         - name: cache-dir
           hostPath:
             path: {{ .Values.cacheDir }}
+            type: DirectoryOrCreate
+        - name: mnt-dir
+          hostPath:
+            path: /var/lib/hf-csi-driver/mnt
             type: DirectoryOrCreate

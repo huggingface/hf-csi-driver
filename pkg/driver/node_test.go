@@ -38,6 +38,12 @@ func (m *mockMounter) IsMountPoint(target string) (bool, error) {
 	return m.mounted[target], nil
 }
 
+func (m *mockMounter) Recover() error {
+	return nil
+}
+
+func (m *mockMounter) Start(_ <-chan struct{}) {}
+
 func TestNodePublishVolume_MissingFields(t *testing.T) {
 	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
