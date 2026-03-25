@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -52,12 +53,12 @@ type PodMounter struct {
 	image     string
 	cacheDir  string
 	checker   mount.Interface
+	crd       *hfMountClient
 
 	// binds tracks target -> source mount path for bind-mounted volumes.
 	binds map[string]string
 
-	// getMountRefs returns all mount references to a path. Defaults to
-	// checker.GetMountRefs but can be overridden for testing.
+	// getMountRefs returns all mount references to a path.
 	getMountRefs func(pathname string) ([]string, error)
 
 	// sourceLocks provides per-source ref-counted mutexes to serialize
@@ -65,7 +66,7 @@ type PodMounter struct {
 	sourceLocks map[string]*refMutex
 }
 
-func NewPodMounter(client kubernetes.Interface, namespace, nodeID, image, cacheDir string) *PodMounter {
+func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image, cacheDir string) *PodMounter {
 	checker := mount.New("")
 	return &PodMounter{
 		client:       client,
@@ -74,6 +75,7 @@ func NewPodMounter(client kubernetes.Interface, namespace, nodeID, image, cacheD
 		image:        image,
 		cacheDir:     cacheDir,
 		checker:      checker,
+		crd:          newHFMountClient(dynClient, namespace),
 		binds:        make(map[string]string),
 		sourceLocks:  make(map[string]*refMutex),
 		getMountRefs: checker.GetMountRefs,
@@ -415,6 +417,10 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		m.releaseSourceLock(mountPath, lk)
 	}()
 
+	// Create HFMount CRD (best-effort, source of truth for kubectl visibility).
+	crdName := hfMountName(volumeID)
+	logCRDError("create", crdName, m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath))
+
 	createdPod := false
 	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
 	klog.Infof("Creating mount pod %s for %s %s", podName, sourceType, sourceID)
@@ -454,6 +460,9 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	m.mu.Lock()
 	m.binds[target] = mountPath
 	m.mu.Unlock()
+
+	logCRDError("addTarget", crdName, m.crd.addTarget(ctx, crdName, target))
+	logCRDError("updateStatus", crdName, m.crd.updateStatus(ctx, crdName, "Mounted", ""))
 
 	cleanup = false
 	klog.Infof("Successfully mounted %s %s at %s (via pod %s)", sourceType, sourceID, target, podName)
@@ -506,6 +515,7 @@ func (m *PodMounter) Unmount(target string) error {
 	if !tracked {
 		volumeID := mountID(target)
 		podName := mountPodPrefix + volumeID
+		crdName := hfMountName(volumeID)
 		derivedSource := filepath.Join(mountBaseDir, volumeID)
 
 		mounted, _ := m.checker.IsMountPoint(derivedSource)
@@ -513,16 +523,23 @@ func (m *PodMounter) Unmount(target string) error {
 			klog.Infof("Untracked target %s: found FUSE mount at %s, cleaning up pod %s", target, derivedSource, podName)
 			_ = fuseUnmount(derivedSource)
 			_ = m.client.CoreV1().Pods(m.namespace).Delete(context.TODO(), podName, metav1.DeleteOptions{})
+			logCRDError("delete", crdName, m.crd.delete(context.TODO(), crdName))
 		}
 		return nil
 	}
 
+	volumeID := mountIDFromSource(source)
+	crdName := hfMountName(volumeID)
+
 	if sourceInUse {
 		klog.V(4).Infof("Source %s still in use by other targets, keeping mount pod", source)
+		logCRDError("removeTarget", crdName, func() error {
+			_, err := m.crd.removeTarget(context.TODO(), crdName, target)
+			return err
+		}())
 		return nil
 	}
 
-	volumeID := mountIDFromSource(source)
 	podName := mountPodPrefix + volumeID
 	klog.Infof("Deleting mount pod %s (no more references)", podName)
 	if err := m.client.CoreV1().Pods(m.namespace).Delete(context.TODO(), podName, metav1.DeleteOptions{}); err != nil {
@@ -530,6 +547,7 @@ func (m *PodMounter) Unmount(target string) error {
 			klog.Warningf("Failed to delete mount pod %s: %v", podName, err)
 		}
 	}
+	logCRDError("delete", crdName, m.crd.delete(context.TODO(), crdName))
 
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -57,7 +58,11 @@ func main() {
 		if err != nil {
 			klog.Fatalf("Failed to create Kubernetes client: %v", err)
 		}
-		mounter = driver.NewPodMounter(client, *namespace, *nodeID, *mountImage, *cacheDir)
+		dynClient, err := dynamic.NewForConfig(config)
+		if err != nil {
+			klog.Fatalf("Failed to create dynamic Kubernetes client: %v", err)
+		}
+		mounter = driver.NewPodMounter(client, dynClient, *namespace, *nodeID, *mountImage, *cacheDir)
 	default:
 		klog.Fatalf("Unknown mount mode %q (must be 'process' or 'pod')", *mountMode)
 	}
