@@ -2,7 +2,7 @@
 FROM rust:1.89-bookworm AS rust-builder
 WORKDIR /build
 COPY hf-mount/ .
-RUN cargo build --release --features fuse --bin hf-mount-fuse
+RUN cargo build --release --bin hf-mount-fuse
 
 # Stage 2: Build CSI driver (Go)
 FROM golang:1.25-bookworm AS go-builder
