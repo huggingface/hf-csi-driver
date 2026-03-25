@@ -115,7 +115,7 @@ func (m *PodMounter) Start(stopCh <-chan struct{}) {
 	)
 
 	podInformer := factory.Core().V1().Pods().Informer()
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, _ = podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldPod, ok1 := oldObj.(*corev1.Pod)
 			newPod, ok2 := newObj.(*corev1.Pod)
