@@ -307,15 +307,6 @@ func (m *PodMounter) cleanupStaleCRDs() {
 			continue
 		}
 
-		// No workloads remain. But if the CRD was just created (Mount in progress,
-		// addWorkload hasn't been called yet), skip it to avoid killing a mount pod
-		// that is still starting up.
-		creationTime := item.GetCreationTimestamp().Time
-		if time.Since(creationTime) < 5*time.Minute {
-			klog.V(4).Infof("cleanupStaleCRDs: CRD %s has no workloads but is recent (%s old), skipping", name, time.Since(creationTime).Round(time.Second))
-			continue
-		}
-
 		// No workloads remain. If mount pod is also gone, clean everything.
 		_, podErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
 		if errors.IsNotFound(podErr) {
@@ -604,6 +595,10 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		}
 	}
 
+	// Register the workload early so the stale cleaner doesn't kill the mount
+	// pod while we're waiting for the FUSE mount to appear.
+	logCRDError("addWorkload", crdName, m.crd.addWorkload(ctx, crdName, opts.WorkloadPodUID, target))
+
 	createdPod := false
 	cleanupPod := false
 	cleanupCRD := false
@@ -674,7 +669,6 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	m.binds[target] = mountPath
 	m.mu.Unlock()
 
-	logCRDError("addWorkload", crdName, m.crd.addWorkload(ctx, crdName, opts.WorkloadPodUID, target))
 	logCRDError("updateStatus", crdName, m.crd.updateStatus(ctx, crdName, "Mounted", ""))
 
 	cleanupPod = false

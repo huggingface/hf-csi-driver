@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/huggingface/hf-csi-driver
-  tag: v0.2.0-rc.4
+  tag: v0.2.0-rc.5
   pullPolicy: IfNotPresent
 
 logVerbosity: 4
