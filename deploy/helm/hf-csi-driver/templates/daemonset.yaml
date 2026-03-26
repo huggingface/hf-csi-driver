@@ -38,8 +38,8 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir={{ .Values.cacheDir }}
-            - --mount-image={{ .Values.image.repository }}:{{ .Values.image.tag }}
-            - --mount-pull-policy={{ .Values.image.pullPolicy }}
+            - --mount-image={{ .Values.hfMount.image.repository }}:{{ .Values.hfMount.image.tag }}
+            - --mount-pull-policy={{ .Values.hfMount.image.pullPolicy }}
             {{- with .Values.imagePullSecrets }}
             - --mount-pull-secrets={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}{{ end }}
             {{- end }}

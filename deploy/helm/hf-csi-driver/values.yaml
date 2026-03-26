@@ -3,6 +3,12 @@ image:
   tag: v0.2.1
   pullPolicy: IfNotPresent
 
+hfMount:
+  image:
+    repository: ghcr.io/huggingface/hf-mount-fuse
+    tag: v0.2.0
+    pullPolicy: IfNotPresent
+
 logVerbosity: 4
 
 cacheDir: /var/lib/hf-csi-driver/cache
