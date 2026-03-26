@@ -38,6 +38,10 @@ func (m *mockMounter) IsMountPoint(target string) (bool, error) {
 	return m.mounted[target], nil
 }
 
+func (m *mockMounter) CheckHealth(_ string) error {
+	return nil
+}
+
 func (m *mockMounter) Recover() error {
 	return nil
 }

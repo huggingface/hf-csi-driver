@@ -27,6 +27,9 @@ type Mounter interface {
 	Mount(sourceType, sourceID, target string, opts MountOptions) error
 	Unmount(target string) error
 	IsMountPoint(target string) (bool, error)
+	// CheckHealth returns an error if the mount backing target is unhealthy
+	// (e.g. mount pod in CrashLoopBackOff). Returns nil if healthy or unknown.
+	CheckHealth(target string) error
 	// Recover re-adopts existing mounts from a previous driver instance.
 	Recover() error
 	// Start launches background goroutines (e.g. pod watchers).

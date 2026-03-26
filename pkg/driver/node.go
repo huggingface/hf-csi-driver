@@ -84,6 +84,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
 			}
 		}
+		// Check mount pod health. If it's in CrashLoopBackOff, return an error
+		// so kubelet emits a FailedMount event visible to the CVO.
+		if err := d.mounter.CheckHealth(target); err != nil {
+			return nil, status.Errorf(codes.Internal, "mount unhealthy for %s: %v", target, err)
+		}
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 

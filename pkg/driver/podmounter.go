@@ -773,6 +773,47 @@ func (m *PodMounter) IsMountPoint(target string) (bool, error) {
 	return m.checker.IsMountPoint(target)
 }
 
+const crashLoopRestartThreshold int32 = 3
+
+// CheckHealth returns an error if the mount pod backing this target is in
+// CrashLoopBackOff (repeated crashes). Kubelet calls NodePublishVolume
+// periodically (requiresRepublish), and returning an error here causes
+// kubelet to emit a FailedMount event that the CVO can detect.
+func (m *PodMounter) CheckHealth(target string) error {
+	m.mu.Lock()
+	source, tracked := m.binds[target]
+	m.mu.Unlock()
+	if !tracked {
+		return nil
+	}
+
+	volumeID := filepath.Base(source)
+	podName := mountPodPrefix + volumeID
+
+	pod, err := m.client.CoreV1().Pods(m.namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		return nil // Can't check, assume healthy.
+	}
+
+	restarts := totalRestartCount(pod)
+	if restarts < crashLoopRestartThreshold {
+		return nil
+	}
+
+	// Check if the container is currently waiting in CrashLoopBackOff.
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+			msg := fmt.Sprintf("mount pod %s is in CrashLoopBackOff (%d restarts)", podName, restarts)
+			if cs.LastTerminationState.Terminated != nil {
+				msg += fmt.Sprintf(": %s", cs.LastTerminationState.Terminated.Message)
+			}
+			return fmt.Errorf("%s", msg)
+		}
+	}
+
+	return nil
+}
+
 // Recover re-adopts existing mount pods and rebuilds the binds map
 // by scanning /proc/self/mountinfo for bind mounts of each FUSE source.
 func (m *PodMounter) Recover() error {
