@@ -282,11 +282,6 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		mountPath, _ := spec["mountPath"].(string)
 		podName, _ := spec["mountPodName"].(string)
 
-		// Skip CRDs from the old schema that used spec.targets instead of spec.workloads.
-		if _, hasWorkloads := spec["workloads"]; !hasWorkloads {
-			continue
-		}
-
 		remaining, cleanupErr := m.crd.removeStaleWorkloads(ctx, name, livePodUIDs, 2*time.Minute)
 		if cleanupErr != nil {
 			klog.V(4).Infof("cleanupStaleCRDs: removeStaleWorkloads %s: %v", name, cleanupErr)
