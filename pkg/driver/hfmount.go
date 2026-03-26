@@ -75,56 +75,51 @@ func (c *hfMountClient) get(ctx context.Context, name string) (map[string]interf
 }
 
 // addWorkload adds a workload attachment (pod UID + target path + timestamp).
+// Retries on conflict (409).
 func (c *hfMountClient) addWorkload(ctx context.Context, name, podUID, targetPath string) error {
-	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
+	return c.retryOnConflict(ctx, name, func(spec map[string]interface{}) (bool, error) {
+		workloads, _ := spec["workloads"].([]interface{})
 
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	workloads, _ := spec["workloads"].([]interface{})
-
-	// Check if already tracked.
-	for _, w := range workloads {
-		wm, _ := w.(map[string]interface{})
-		if wm["targetPath"] == targetPath {
-			return nil
+		for _, w := range workloads {
+			wm, _ := w.(map[string]interface{})
+			if wm["targetPath"] == targetPath {
+				return false, nil // Already tracked.
+			}
 		}
-	}
 
-	workloads = append(workloads, map[string]interface{}{
-		"podUID":         podUID,
-		"targetPath":     targetPath,
-		"attachmentTime": time.Now().UTC().Format(time.RFC3339),
+		workloads = append(workloads, map[string]interface{}{
+			"podUID":         podUID,
+			"targetPath":     targetPath,
+			"attachmentTime": time.Now().UTC().Format(time.RFC3339),
+		})
+		spec["workloads"] = workloads
+		return true, nil
 	})
-	spec["workloads"] = workloads
-
-	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
-	return err
 }
 
-// removeWorkload removes a workload by target path.
+// removeWorkload removes a workload by target path. Retries on conflict.
 // Returns the remaining workload count.
 func (c *hfMountClient) removeWorkload(ctx context.Context, name, targetPath string) (int, error) {
-	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return 0, err
-	}
+	var count int
+	err := c.retryOnConflict(ctx, name, func(spec map[string]interface{}) (bool, error) {
+		workloads, _ := spec["workloads"].([]interface{})
 
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	workloads, _ := spec["workloads"].([]interface{})
-
-	var remaining []interface{}
-	for _, w := range workloads {
-		wm, _ := w.(map[string]interface{})
-		if wm["targetPath"] != targetPath {
-			remaining = append(remaining, w)
+		var remaining []interface{}
+		for _, w := range workloads {
+			wm, _ := w.(map[string]interface{})
+			if wm["targetPath"] != targetPath {
+				remaining = append(remaining, w)
+			}
 		}
-	}
 
-	spec["workloads"] = remaining
-	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
-	return len(remaining), err
+		count = len(remaining)
+		if len(remaining) == len(workloads) {
+			return false, nil // Nothing to remove.
+		}
+		spec["workloads"] = remaining
+		return true, nil
+	})
+	return count, err
 }
 
 // list returns all HFMount CRs in the namespace filtered by node name.
@@ -144,44 +139,70 @@ func (c *hfMountClient) list(ctx context.Context, nodeName string) ([]unstructur
 }
 
 // removeStaleWorkloads removes workloads whose pod UID is not in the given
-// set of live pod UIDs. Returns the updated workload list and whether changes
-// were made.
+// set of live pod UIDs (with a staleness threshold). Retries on conflict.
 func (c *hfMountClient) removeStaleWorkloads(ctx context.Context, name string, livePodUIDs map[string]bool, staleThreshold time.Duration) (int, error) {
-	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return 0, err
-	}
+	var count int
+	err := c.retryOnConflict(ctx, name, func(spec map[string]interface{}) (bool, error) {
+		workloads, _ := spec["workloads"].([]interface{})
 
-	spec, _ := obj.Object["spec"].(map[string]interface{})
-	workloads, _ := spec["workloads"].([]interface{})
+		now := time.Now().UTC()
+		var remaining []interface{}
+		for _, w := range workloads {
+			wm, _ := w.(map[string]interface{})
+			podUID, _ := wm["podUID"].(string)
+			attachTimeStr, _ := wm["attachmentTime"].(string)
 
-	now := time.Now().UTC()
-	var remaining []interface{}
-	for _, w := range workloads {
-		wm, _ := w.(map[string]interface{})
-		podUID, _ := wm["podUID"].(string)
-		attachTimeStr, _ := wm["attachmentTime"].(string)
+			exists := livePodUIDs[podUID]
+			attachTime, _ := time.Parse(time.RFC3339, attachTimeStr)
+			isStale := !attachTime.IsZero() && now.Sub(attachTime) > staleThreshold
 
-		exists := livePodUIDs[podUID]
-		attachTime, _ := time.Parse(time.RFC3339, attachTimeStr)
-		isStale := !attachTime.IsZero() && now.Sub(attachTime) > staleThreshold
-
-		// Keep if pod exists OR attachment is too fresh to be considered stale.
-		if exists || !isStale {
-			remaining = append(remaining, w)
-		} else {
-			targetPath, _ := wm["targetPath"].(string)
-			klog.Infof("Removing stale workload from CRD %s: podUID=%s target=%s (attached %s ago)", name, podUID, targetPath, now.Sub(attachTime).Round(time.Second))
+			if exists || !isStale {
+				remaining = append(remaining, w)
+			} else {
+				targetPath, _ := wm["targetPath"].(string)
+				klog.Infof("Removing stale workload from CRD %s: podUID=%s target=%s (attached %s ago)", name, podUID, targetPath, now.Sub(attachTime).Round(time.Second))
+			}
 		}
-	}
 
-	if len(remaining) == len(workloads) {
-		return len(remaining), nil // No changes.
-	}
+		count = len(remaining)
+		if len(remaining) == len(workloads) {
+			return false, nil
+		}
+		spec["workloads"] = remaining
+		return true, nil
+	})
+	return count, err
+}
 
-	spec["workloads"] = remaining
-	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
-	return len(remaining), err
+// retryOnConflict performs a read-modify-write loop on the CRD spec with
+// retries on 409 Conflict errors. The mutate function receives the spec and
+// returns (changed, error). If changed is false, the update is skipped.
+func (c *hfMountClient) retryOnConflict(ctx context.Context, name string, mutate func(spec map[string]interface{}) (bool, error)) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		spec, _ := obj.Object["spec"].(map[string]interface{})
+		changed, mutErr := mutate(spec)
+		if mutErr != nil {
+			return mutErr
+		}
+		if !changed {
+			return nil
+		}
+
+		_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		if !errors.IsConflict(err) {
+			return err
+		}
+		klog.V(4).Infof("HFMount CRD %s update conflict (attempt %d/5), retrying", name, attempt+1)
+	}
+	return fmt.Errorf("HFMount CRD %s: exceeded retry limit on conflict", name)
 }
 
 // updateStatus updates the HFMount's status.phase and status.message.

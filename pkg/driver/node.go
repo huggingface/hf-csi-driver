@@ -136,6 +136,9 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Error(codes.InvalidArgument, "targetPath is required")
 	}
 
+	// Always clean up the token file on unpublish, regardless of mount state.
+	defer d.cleanupTokenFile(volumeID)
+
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
 		if mount.IsCorruptedMnt(err) {
@@ -164,15 +167,15 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Errorf(codes.Internal, "failed to unmount %s: %v", target, err)
 	}
 
-	// Clean up token file for this volume.
+	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+func (d *Driver) cleanupTokenFile(volumeID string) {
 	tokenFile := tokenFilePath(d.cacheBase, volumeID)
 	if err := os.Remove(tokenFile); err != nil && !os.IsNotExist(err) {
 		klog.V(4).Infof("Remove token file %s: %v", tokenFile, err)
 	}
-	// Remove the token directory if empty.
 	_ = os.Remove(filepath.Dir(tokenFile))
-
-	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
 func (d *Driver) NodeStageVolume(_ context.Context, _ *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {

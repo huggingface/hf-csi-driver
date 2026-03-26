@@ -282,6 +282,11 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		mountPath, _ := spec["mountPath"].(string)
 		podName, _ := spec["mountPodName"].(string)
 
+		// Skip CRDs from the old schema that used spec.targets instead of spec.workloads.
+		if _, hasWorkloads := spec["workloads"]; !hasWorkloads {
+			continue
+		}
+
 		remaining, cleanupErr := m.crd.removeStaleWorkloads(ctx, name, livePodUIDs, 2*time.Minute)
 		if cleanupErr != nil {
 			klog.V(4).Infof("cleanupStaleCRDs: removeStaleWorkloads %s: %v", name, cleanupErr)
@@ -619,7 +624,8 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		if errors.IsAlreadyExists(err) {
 			existing, getErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
 			if getErr != nil {
-				cleanupCRD = true
+				// Don't clean up the CRD here: the pod already existed so the
+				// CRD likely pre-exists too and belongs to the previous mount.
 				return fmt.Errorf("failed to get existing mount pod %s: %w", podName, getErr)
 			}
 			needsReplace := existing.DeletionTimestamp != nil ||
@@ -632,11 +638,9 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 					_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 				}
 				if waitErr := m.waitForPodDeletion(ctx, podName); waitErr != nil {
-					cleanupCRD = true
 					return fmt.Errorf("timed out waiting for stale pod %s to be deleted: %w", podName, waitErr)
 				}
 				if _, retryErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, pod, metav1.CreateOptions{}); retryErr != nil {
-					cleanupCRD = true
 					return fmt.Errorf("failed to re-create mount pod %s: %w", podName, retryErr)
 				}
 				createdPod = true
@@ -885,15 +889,23 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	}
 
 	// Read workload targets from CRD as fallback/supplement.
+	// Only include targets whose path still exists on the filesystem (kubelet
+	// removes the target directory when the workload pod is deleted).
 	volumeID := filepath.Base(mountPath)
 	crdName := hfMountName(volumeID)
 	if spec, crdErr := m.crd.get(ctx, crdName); crdErr == nil {
 		if workloads, _ := spec["workloads"].([]interface{}); len(workloads) > 0 {
 			for _, w := range workloads {
 				wm, _ := w.(map[string]interface{})
-				if path, ok := wm["targetPath"].(string); ok && path != "" {
-					refSet[path] = true
+				path, _ := wm["targetPath"].(string)
+				if path == "" {
+					continue
 				}
+				if _, statErr := os.Stat(filepath.Dir(path)); os.IsNotExist(statErr) {
+					klog.V(4).Infof("Recovery: skipping CRD target %s (directory gone)", path)
+					continue
+				}
+				refSet[path] = true
 			}
 		}
 	}
