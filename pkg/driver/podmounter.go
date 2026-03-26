@@ -650,7 +650,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		return fmt.Errorf("mount pod %s did not become running: %w", podName, err)
 	}
 
-	if err := m.waitForMount(mountPath); err != nil {
+	if err := m.waitForMount(mountPath, podName); err != nil {
 		return fmt.Errorf("FUSE mount did not appear at %s: %w", mountPath, err)
 	}
 
@@ -1072,7 +1072,7 @@ func (m *PodMounter) waitForPodRunning(ctx context.Context, name string) error {
 	}
 }
 
-func (m *PodMounter) waitForMount(path string) error {
+func (m *PodMounter) waitForMount(path, podName string) error {
 	deadline := time.After(mountTimeoutPM)
 	ticker := time.NewTicker(mountReadyPollPM)
 	defer ticker.Stop()
@@ -1093,6 +1093,19 @@ func (m *PodMounter) waitForMount(path string) error {
 			}
 			if mounted {
 				return nil
+			}
+			// Check if the mount pod crashed while we wait.
+			pod, podErr := m.client.CoreV1().Pods(m.namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+			if podErr != nil {
+				continue
+			}
+			if isPodTerminal(pod) {
+				return fmt.Errorf("mount pod %s failed (phase=%s) before mount appeared", podName, pod.Status.Phase)
+			}
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+					return fmt.Errorf("mount pod %s is in CrashLoopBackOff (%d restarts)", podName, cs.RestartCount)
+				}
 			}
 		}
 	}
