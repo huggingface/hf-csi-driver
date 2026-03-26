@@ -3,7 +3,9 @@ package driver
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -53,7 +55,7 @@ func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, 
 				"mountPodName": mountPodName,
 				"mountPath":    mountPath,
 				"mountArgs":    argsIface,
-				"targets":      []interface{}{},
+				"workloads":    []interface{}{},
 			},
 		},
 	}
@@ -72,48 +74,112 @@ func (c *hfMountClient) get(ctx context.Context, name string) (map[string]interf
 	return spec, nil
 }
 
-// addTarget adds a target path to the HFMount's spec.targets list.
-func (c *hfMountClient) addTarget(ctx context.Context, name, target string) error {
+// addWorkload adds a workload attachment (pod UID + target path + timestamp).
+func (c *hfMountClient) addWorkload(ctx context.Context, name, podUID, targetPath string) error {
 	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 
 	spec, _ := obj.Object["spec"].(map[string]interface{})
-	targets, _ := spec["targets"].([]interface{})
+	workloads, _ := spec["workloads"].([]interface{})
 
-	for _, t := range targets {
-		if t == target {
-			return nil // Already tracked.
+	// Check if already tracked.
+	for _, w := range workloads {
+		wm, _ := w.(map[string]interface{})
+		if wm["targetPath"] == targetPath {
+			return nil
 		}
 	}
 
-	targets = append(targets, target)
-	spec["targets"] = targets
+	workloads = append(workloads, map[string]interface{}{
+		"podUID":         podUID,
+		"targetPath":     targetPath,
+		"attachmentTime": time.Now().UTC().Format(time.RFC3339),
+	})
+	spec["workloads"] = workloads
 
 	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
 	return err
 }
 
-// removeTarget removes a target path from the HFMount's spec.targets list.
-// Returns the remaining target count.
-func (c *hfMountClient) removeTarget(ctx context.Context, name, target string) (int, error) {
+// removeWorkload removes a workload by target path.
+// Returns the remaining workload count.
+func (c *hfMountClient) removeWorkload(ctx context.Context, name, targetPath string) (int, error) {
 	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return 0, err
 	}
 
 	spec, _ := obj.Object["spec"].(map[string]interface{})
-	targets, _ := spec["targets"].([]interface{})
+	workloads, _ := spec["workloads"].([]interface{})
 
 	var remaining []interface{}
-	for _, t := range targets {
-		if t != target {
-			remaining = append(remaining, t)
+	for _, w := range workloads {
+		wm, _ := w.(map[string]interface{})
+		if wm["targetPath"] != targetPath {
+			remaining = append(remaining, w)
 		}
 	}
 
-	spec["targets"] = remaining
+	spec["workloads"] = remaining
+	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
+	return len(remaining), err
+}
+
+// list returns all HFMount CRs in the namespace filtered by node name.
+func (c *hfMountClient) list(ctx context.Context, nodeName string) ([]unstructured.Unstructured, error) {
+	list, err := c.resource().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var result []unstructured.Unstructured
+	for _, item := range list.Items {
+		spec, _ := item.Object["spec"].(map[string]interface{})
+		if spec["nodeName"] == nodeName {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
+// removeStaleWorkloads removes workloads whose pod UID is not in the given
+// set of live pod UIDs. Returns the updated workload list and whether changes
+// were made.
+func (c *hfMountClient) removeStaleWorkloads(ctx context.Context, name string, livePodUIDs map[string]bool, staleThreshold time.Duration) (int, error) {
+	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return 0, err
+	}
+
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	workloads, _ := spec["workloads"].([]interface{})
+
+	now := time.Now().UTC()
+	var remaining []interface{}
+	for _, w := range workloads {
+		wm, _ := w.(map[string]interface{})
+		podUID, _ := wm["podUID"].(string)
+		attachTimeStr, _ := wm["attachmentTime"].(string)
+
+		exists := livePodUIDs[podUID]
+		attachTime, _ := time.Parse(time.RFC3339, attachTimeStr)
+		isStale := !attachTime.IsZero() && now.Sub(attachTime) > staleThreshold
+
+		// Keep if pod exists OR attachment is too fresh to be considered stale.
+		if exists || !isStale {
+			remaining = append(remaining, w)
+		} else {
+			targetPath, _ := wm["targetPath"].(string)
+			klog.Infof("Removing stale workload from CRD %s: podUID=%s target=%s (attached %s ago)", name, podUID, targetPath, now.Sub(attachTime).Round(time.Second))
+		}
+	}
+
+	if len(remaining) == len(workloads) {
+		return len(remaining), nil // No changes.
+	}
+
+	spec["workloads"] = remaining
 	_, err = c.resource().Update(ctx, obj, metav1.UpdateOptions{})
 	return len(remaining), err
 }
@@ -135,30 +201,18 @@ func (c *hfMountClient) updateStatus(ctx context.Context, name, phase, message s
 	return err
 }
 
-// list returns all HFMount CRs in the namespace filtered by node name.
-func (c *hfMountClient) list(ctx context.Context, nodeName string) ([]unstructured.Unstructured, error) {
-	list, err := c.resource().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	var result []unstructured.Unstructured
-	for _, item := range list.Items {
-		spec, _ := item.Object["spec"].(map[string]interface{})
-		if spec["nodeName"] == nodeName {
-			result = append(result, item)
-		}
-	}
-	return result, nil
-}
-
 // delete deletes the HFMount CR.
 func (c *hfMountClient) delete(ctx context.Context, name string) error {
-	return c.resource().Delete(ctx, name, metav1.DeleteOptions{})
+	err := c.resource().Delete(ctx, name, metav1.DeleteOptions{})
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // logCRDError logs CRD operation errors.
-// CRD write errors are non-fatal; the in-memory binds map handles the hot path,
-// but the CRD is the source of truth for mount args needed to recreate pods.
+// CRD write errors are non-fatal for addWorkload/removeWorkload/updateStatus;
+// the CRD is the source of truth for mount args and stale-attachment cleanup.
 func logCRDError(op, name string, err error) {
 	if err != nil {
 		klog.Warningf("HFMount CRD %s %s: %v", op, name, err)

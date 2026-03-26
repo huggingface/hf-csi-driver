@@ -26,6 +26,7 @@ const (
 	volumeCtxPollInterval = "pollIntervalSecs"
 	volumeCtxMetadataTtl  = "metadataTtlMs"
 	volumeCtxTokenKey     = "tokenKey"
+	volumeCtxPodUID       = "csi.storage.k8s.io/pod.uid"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -100,6 +101,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
+		WorkloadPodUID:   volCtx[volumeCtxPodUID],
 	}
 
 	// If a token is provided, write it to a file for hf-mount to read.

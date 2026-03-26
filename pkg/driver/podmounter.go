@@ -248,10 +248,11 @@ func (m *PodMounter) runCleanupScan() {
 	}
 }
 
-// cleanupStaleCRDs lists all HFMount CRDs for this node and removes stale
-// targets (paths that are no longer mount points). If all targets are gone and
-// the mount pod is also gone, the CRD is deleted. This is equivalent to AWS's
-// StaleAttachmentCleaner.
+// cleanupStaleCRDs lists all HFMount CRDs for this node and removes workload
+// attachments whose pod UID no longer exists in the cluster (with a 2-minute
+// staleness threshold to avoid races). If all workloads are removed and the
+// mount pod is also gone, the CRD and source mount are deleted. This matches
+// AWS's StaleAttachmentCleaner pattern.
 func (m *PodMounter) cleanupStaleCRDs() {
 	ctx := context.TODO()
 	crds, err := m.crd.list(ctx, m.nodeID)
@@ -260,60 +261,51 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		return
 	}
 
+	if len(crds) == 0 {
+		return
+	}
+
+	// Build a set of live pod UIDs across the cluster.
+	allPods, listErr := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if listErr != nil {
+		klog.V(4).Infof("cleanupStaleCRDs: cannot list pods: %v", listErr)
+		return
+	}
+	livePodUIDs := make(map[string]bool, len(allPods.Items))
+	for _, p := range allPods.Items {
+		livePodUIDs[string(p.UID)] = true
+	}
+
 	for _, item := range crds {
 		name := item.GetName()
 		spec, _ := item.Object["spec"].(map[string]interface{})
-		targets, _ := spec["targets"].([]interface{})
 		mountPath, _ := spec["mountPath"].(string)
+		podName, _ := spec["mountPodName"].(string)
 
-		// Remove stale targets (paths no longer mounted).
-		var liveTargets []interface{}
-		for _, t := range targets {
-			path, _ := t.(string)
-			if path == "" {
-				continue
-			}
-			mounted, err := m.checker.IsMountPoint(path)
-			if err == nil && mounted {
-				liveTargets = append(liveTargets, t)
-			}
-		}
-
-		staleCount := len(targets) - len(liveTargets)
-		if staleCount == 0 {
+		remaining, cleanupErr := m.crd.removeStaleWorkloads(ctx, name, livePodUIDs, 2*time.Minute)
+		if cleanupErr != nil {
+			klog.V(4).Infof("cleanupStaleCRDs: removeStaleWorkloads %s: %v", name, cleanupErr)
 			continue
 		}
 
-		klog.Infof("cleanupStaleCRDs: CRD %s has %d stale targets (of %d)", name, staleCount, len(targets))
-
-		// If no live targets remain, check if the mount pod is also gone.
-		if len(liveTargets) == 0 {
-			podName, _ := spec["mountPodName"].(string)
-			_, podErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
-			if errors.IsNotFound(podErr) {
-				// Pod and all targets gone: clean up everything.
-				if mountPath != "" {
-					_ = fuseUnmount(mountPath)
-					_ = os.Remove(mountPath)
-				}
-				logCRDError("delete", name, m.crd.delete(ctx, name))
-				klog.Infof("cleanupStaleCRDs: deleted orphaned CRD %s", name)
-				continue
-			}
+		if remaining > 0 {
+			continue
 		}
 
-		// Update the CRD with remaining live targets.
-		spec["targets"] = liveTargets
-		logCRDError("updateTargets", name, func() error {
-			obj, err := m.crd.resource().Get(ctx, name, metav1.GetOptions{})
-			if err != nil {
-				return err
+		// No workloads remain. If mount pod is also gone, clean everything.
+		_, podErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
+		if errors.IsNotFound(podErr) {
+			if mountPath != "" {
+				_ = fuseUnmount(mountPath)
+				_ = os.Remove(mountPath)
 			}
-			objSpec, _ := obj.Object["spec"].(map[string]interface{})
-			objSpec["targets"] = liveTargets
-			_, err = m.crd.resource().Update(ctx, obj, metav1.UpdateOptions{})
-			return err
-		}())
+			logCRDError("delete", name, m.crd.delete(ctx, name))
+			klog.Infof("cleanupStaleCRDs: deleted orphaned CRD %s (no workloads, no pod)", name)
+		} else if podErr == nil {
+			// Pod exists but no workloads: mark for cleanup by deleting the pod.
+			klog.Infof("cleanupStaleCRDs: CRD %s has no workloads, deleting mount pod %s", name, podName)
+			_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+		}
 	}
 }
 
@@ -682,7 +674,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	m.binds[target] = mountPath
 	m.mu.Unlock()
 
-	logCRDError("addTarget", crdName, m.crd.addTarget(ctx, crdName, target))
+	logCRDError("addWorkload", crdName, m.crd.addWorkload(ctx, crdName, opts.WorkloadPodUID, target))
 	logCRDError("updateStatus", crdName, m.crd.updateStatus(ctx, crdName, "Mounted", ""))
 
 	cleanupPod = false
@@ -755,8 +747,8 @@ func (m *PodMounter) Unmount(target string) error {
 
 	if sourceInUse {
 		klog.V(4).Infof("Source %s still in use by other targets, keeping mount pod", source)
-		logCRDError("removeTarget", crdName, func() error {
-			_, err := m.crd.removeTarget(context.TODO(), crdName, target)
+		logCRDError("removeWorkload", crdName, func() error {
+			_, err := m.crd.removeWorkload(context.TODO(), crdName, target)
 			return err
 		}())
 		return nil
@@ -892,13 +884,14 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 		}
 	}
 
-	// Read targets from CRD as fallback/supplement.
+	// Read workload targets from CRD as fallback/supplement.
 	volumeID := filepath.Base(mountPath)
 	crdName := hfMountName(volumeID)
 	if spec, crdErr := m.crd.get(ctx, crdName); crdErr == nil {
-		if crdTargets, _ := spec["targets"].([]interface{}); len(crdTargets) > 0 {
-			for _, t := range crdTargets {
-				if path, ok := t.(string); ok && path != "" {
+		if workloads, _ := spec["workloads"].([]interface{}); len(workloads) > 0 {
+			for _, w := range workloads {
+				wm, _ := w.(map[string]interface{})
+				if path, ok := wm["targetPath"].(string); ok && path != "" {
 					refSet[path] = true
 				}
 			}

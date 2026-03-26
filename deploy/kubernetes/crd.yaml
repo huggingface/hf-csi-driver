@@ -42,10 +42,19 @@ spec:
                   description: CLI arguments used to create the mount pod, enabling pod recreation on failure.
                   items:
                     type: string
-                targets:
+                workloads:
                   type: array
+                  description: Workload pods consuming this mount, with pod UID and attachment time.
                   items:
-                    type: string
+                    type: object
+                    properties:
+                      podUID:
+                        type: string
+                      targetPath:
+                        type: string
+                      attachmentTime:
+                        type: string
+                        format: date-time
               required:
                 - nodeName
                 - sourceType

@@ -30,8 +30,9 @@ type MountOptions struct {
 	PollIntervalSecs string
 	MetadataTtlMs    string
 	ReadOnly         bool
-	ExtraArgs []string // passthrough flags from PV mountOptions
-	TokenFile string   // path to a file where the token is written for live refresh
+	ExtraArgs      []string // passthrough flags from PV mountOptions
+	TokenFile      string   // path to a file where the token is written for live refresh
+	WorkloadPodUID string   // UID of the workload pod consuming this volume
 }
 
 type Mounter interface {
