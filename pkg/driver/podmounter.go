@@ -342,7 +342,7 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 		return
 	}
 	if len(mountRefs) > 0 {
-		klog.Infof("Source %s still has %d kernel refs, attempting pod recreation", mountPath, len(mountRefs))
+		klog.Infof("Source %s still has %d kernel refs, attempting heal", mountPath, len(mountRefs))
 		go m.tryHealSource(mountPath)
 		return
 	}
