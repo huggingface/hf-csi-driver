@@ -1,0 +1,89 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hfmounts.hf.csi.huggingface.co
+spec:
+  group: hf.csi.huggingface.co
+  names:
+    kind: HFMount
+    listKind: HFMountList
+    plural: hfmounts
+    singular: hfmount
+    shortNames:
+      - hfm
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: HFMount tracks the lifecycle of a FUSE mount managed by the HF CSI driver.
+          properties:
+            spec:
+              type: object
+              properties:
+                nodeName:
+                  type: string
+                volumeID:
+                  type: string
+                sourceType:
+                  type: string
+                  enum: ["repo", "bucket"]
+                sourceID:
+                  type: string
+                mountPodName:
+                  type: string
+                mountPath:
+                  type: string
+                mountArgs:
+                  type: array
+                  description: CLI arguments used to create the mount pod, enabling pod recreation on failure.
+                  items:
+                    type: string
+                workloads:
+                  type: array
+                  description: Workload pods consuming this mount, with pod UID and attachment time.
+                  items:
+                    type: object
+                    properties:
+                      podUID:
+                        type: string
+                      targetPath:
+                        type: string
+                      attachmentTime:
+                        type: string
+                        format: date-time
+              required:
+                - nodeName
+                - sourceType
+                - sourceID
+                - mountPodName
+                - mountPath
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: ["Pending", "Mounted", "Failed"]
+                message:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Node
+          type: string
+          jsonPath: .spec.nodeName
+        - name: Source
+          type: string
+          jsonPath: .spec.sourceID
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Pod
+          type: string
+          jsonPath: .spec.mountPodName
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

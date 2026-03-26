@@ -43,6 +43,8 @@ helm install hf-csi deploy/helm/hf-csi-driver/ \
 ```bash
 kubectl apply -f deploy/kubernetes/serviceaccount.yaml
 kubectl apply -f deploy/kubernetes/csidriver.yaml
+kubectl apply -f deploy/kubernetes/rbac.yaml
+kubectl apply -f deploy/kubernetes/crd.yaml
 kubectl apply -f deploy/kubernetes/daemonset.yaml
 ```
 

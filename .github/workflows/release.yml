@@ -32,13 +32,21 @@ jobs:
         id: version
         run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
+      - name: Determine tags
+        id: tags
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          TAGS="${{ env.IMAGE }}:${TAG}"
+          if [[ "$TAG" != *"-"* ]]; then
+            TAGS="${TAGS},${{ env.IMAGE }}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
-            ${{ env.IMAGE }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
 
   helm:
     name: Publish Helm Chart

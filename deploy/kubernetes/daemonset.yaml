@@ -22,11 +22,13 @@ spec:
       serviceAccountName: hf-csi-driver
       containers:
         - name: hf-csi-plugin
-          image: ghcr.io/huggingface/hf-csi-driver:v0.1.0
+          image: ghcr.io/huggingface/hf-csi-driver:v0.2.0
           args:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir=/var/lib/hf-csi-driver/cache
+            - --mount-image=ghcr.io/huggingface/hf-csi-driver:v0.2.0
+            - --mount-pull-policy=IfNotPresent
             - --v=4
           env:
             - name: CSI_NODE_NAME
@@ -43,6 +45,9 @@ spec:
               mountPath: /csi
             - name: cache-dir
               mountPath: /var/lib/hf-csi-driver/cache
+            - name: mnt-dir
+              mountPath: /var/lib/hf-csi-driver/mnt
+              mountPropagation: Bidirectional
           ports:
             - containerPort: 9808
               name: healthz
@@ -97,4 +102,8 @@ spec:
         - name: cache-dir
           hostPath:
             path: /var/lib/hf-csi-driver/cache
+            type: DirectoryOrCreate
+        - name: mnt-dir
+          hostPath:
+            path: /var/lib/hf-csi-driver/mnt
             type: DirectoryOrCreate

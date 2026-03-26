@@ -26,6 +26,7 @@ const (
 	volumeCtxPollInterval = "pollIntervalSecs"
 	volumeCtxMetadataTtl  = "metadataTtlMs"
 	volumeCtxTokenKey     = "tokenKey"
+	volumeCtxPodUID       = "csi.storage.k8s.io/pod.uid"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -83,6 +84,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
 			}
 		}
+		// Check mount pod health. If it's in CrashLoopBackOff, return an error
+		// so kubelet emits a FailedMount event visible to the CVO.
+		if err := d.mounter.CheckHealth(target); err != nil {
+			return nil, status.Errorf(codes.Internal, "mount unhealthy for %s: %v", target, err)
+		}
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -100,6 +106,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		PollIntervalSecs: volCtx[volumeCtxPollInterval],
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
+		WorkloadPodUID:   volCtx[volumeCtxPodUID],
 	}
 
 	// If a token is provided, write it to a file for hf-mount to read.
@@ -134,6 +141,9 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Error(codes.InvalidArgument, "targetPath is required")
 	}
 
+	// Always clean up the token file on unpublish, regardless of mount state.
+	defer d.cleanupTokenFile(volumeID)
+
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
 		if mount.IsCorruptedMnt(err) {
@@ -163,6 +173,14 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	}
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+func (d *Driver) cleanupTokenFile(volumeID string) {
+	tokenFile := tokenFilePath(d.cacheBase, volumeID)
+	if err := os.Remove(tokenFile); err != nil && !os.IsNotExist(err) {
+		klog.V(4).Infof("Remove token file %s: %v", tokenFile, err)
+	}
+	_ = os.Remove(filepath.Dir(tokenFile))
 }
 
 func (d *Driver) NodeStageVolume(_ context.Context, _ *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {

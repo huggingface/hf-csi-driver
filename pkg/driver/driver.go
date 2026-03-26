@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -31,9 +32,11 @@ type Driver struct {
 	cacheBase string
 	srv       *grpc.Server
 	mounter   Mounter
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 }
 
-func NewDriver(endpoint, nodeID, cacheBase string) *Driver {
+func NewDriver(endpoint, nodeID, cacheBase string, mounter Mounter) *Driver {
 	if cacheBase == "" {
 		cacheBase = DefaultCacheBase
 	}
@@ -41,7 +44,8 @@ func NewDriver(endpoint, nodeID, cacheBase string) *Driver {
 		endpoint:  endpoint,
 		nodeID:    nodeID,
 		cacheBase: cacheBase,
-		mounter:   NewProcessMounter(),
+		mounter:   mounter,
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -57,6 +61,12 @@ func (d *Driver) Run() error {
 	if err := os.MkdirAll(filepath.Dir(addr), 0750); err != nil {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
+
+	if err := d.mounter.Recover(); err != nil {
+		klog.Warningf("Mount recovery failed: %v", err)
+	}
+
+	d.mounter.Start(d.stopCh)
 
 	listener, err := net.Listen("unix", addr)
 	if err != nil {
@@ -77,6 +87,8 @@ func (d *Driver) Run() error {
 }
 
 func (d *Driver) Stop() {
+	d.stopOnce.Do(func() { close(d.stopCh) })
+
 	if d.srv == nil {
 		return
 	}
