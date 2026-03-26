@@ -162,6 +162,14 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Errorf(codes.Internal, "failed to unmount %s: %v", target, err)
 	}
 
+	// Clean up token file for this volume.
+	tokenFile := tokenFilePath(d.cacheBase, volumeID)
+	if err := os.Remove(tokenFile); err != nil && !os.IsNotExist(err) {
+		klog.V(4).Infof("Remove token file %s: %v", tokenFile, err)
+	}
+	// Remove the token directory if empty.
+	_ = os.Remove(filepath.Dir(tokenFile))
+
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 

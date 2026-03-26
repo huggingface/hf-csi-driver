@@ -365,6 +365,11 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 	for _, target := range staleTargets {
 		_ = fuseUnmount(target)
 	}
+
+	// Remove the source mount directory.
+	if err := os.Remove(mountPath); err != nil && !os.IsNotExist(err) {
+		klog.V(4).Infof("Remove source dir %s: %v", mountPath, err)
+	}
 }
 
 // tryHealSource attempts to heal a source mount that still has active bind
@@ -524,9 +529,14 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		m.releaseSourceLock(mountPath, lk)
 	}()
 
-	// Create HFMount CRD (best-effort, source of truth for kubectl visibility).
+	// Create HFMount CRD. This is the source of truth for mount args, required
+	// for pod recreation on failure. Mount must fail if CRD cannot be persisted.
 	crdName := hfMountName(volumeID)
-	logCRDError("create", crdName, m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args))
+	if crdErr := m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args); crdErr != nil {
+		if !errors.IsAlreadyExists(crdErr) {
+			return fmt.Errorf("failed to create HFMount CRD %s: %w", crdName, crdErr)
+		}
+	}
 
 	createdPod := false
 	cleanupPod := false
@@ -697,6 +707,11 @@ func (m *PodMounter) Unmount(target string) error {
 		}
 	}
 	logCRDError("delete", crdName, m.crd.delete(context.TODO(), crdName))
+
+	// Remove the source mount directory.
+	if err := os.Remove(source); err != nil && !os.IsNotExist(err) {
+		klog.V(4).Infof("Remove source dir %s: %v", source, err)
+	}
 
 	return nil
 }
