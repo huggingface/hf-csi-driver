@@ -22,12 +22,12 @@ spec:
       serviceAccountName: hf-csi-driver
       containers:
         - name: hf-csi-plugin
-          image: ghcr.io/huggingface/hf-csi-driver:v0.2.0-rc.1
+          image: ghcr.io/huggingface/hf-csi-driver:v0.2.0-rc.2
           args:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir=/var/lib/hf-csi-driver/cache
-            - --mount-image=ghcr.io/huggingface/hf-csi-driver:v0.2.0-rc.1
+            - --mount-image=ghcr.io/huggingface/hf-csi-driver:v0.2.0-rc.2
             - --mount-pull-policy=IfNotPresent
             - --v=4
           env:
