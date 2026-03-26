@@ -39,6 +39,11 @@ spec:
                   type: string
                 mountPath:
                   type: string
+                mountArgs:
+                  type: array
+                  description: CLI arguments used to create the mount pod, enabling pod recreation on failure.
+                  items:
+                    type: string
                 targets:
                   type: array
                   items:

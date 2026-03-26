@@ -32,7 +32,12 @@ func (c *hfMountClient) resource() dynamic.ResourceInterface {
 }
 
 // create creates an HFMount CR for a given mount operation.
-func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, sourceID, mountPodName, mountPath string) error {
+func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, sourceID, mountPodName, mountPath string, mountArgs []string) error {
+	argsIface := make([]interface{}, len(mountArgs))
+	for i, a := range mountArgs {
+		argsIface[i] = a
+	}
+
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "hf.csi.huggingface.co/v1alpha1",
@@ -47,6 +52,7 @@ func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, 
 				"sourceID":     sourceID,
 				"mountPodName": mountPodName,
 				"mountPath":    mountPath,
+				"mountArgs":    argsIface,
 				"targets":      []interface{}{},
 			},
 		},
@@ -54,6 +60,16 @@ func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, 
 
 	_, err := c.resource().Create(ctx, obj, metav1.CreateOptions{})
 	return err
+}
+
+// get retrieves an HFMount CR and returns its spec fields.
+func (c *hfMountClient) get(ctx context.Context, name string) (map[string]interface{}, error) {
+	obj, err := c.resource().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	return spec, nil
 }
 
 // addTarget adds a target path to the HFMount's spec.targets list.
@@ -125,7 +141,8 @@ func (c *hfMountClient) delete(ctx context.Context, name string) error {
 }
 
 // logCRDError logs CRD operation errors.
-// CRD operations are best-effort; the in-memory binds map is the primary state.
+// CRD write errors are non-fatal; the in-memory binds map handles the hot path,
+// but the CRD is the source of truth for mount args needed to recreate pods.
 func logCRDError(op, name string, err error) {
 	if err != nil {
 		klog.Warningf("HFMount CRD %s %s: %v", op, name, err)

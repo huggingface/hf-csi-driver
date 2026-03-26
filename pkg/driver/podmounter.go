@@ -369,8 +369,8 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 
 // tryHealSource attempts to heal a source mount that still has active bind
 // refs. If the mount pod is still running, it triggers a rebind. If the pod
-// is gone or terminal, it logs a warning since full pod recreation requires
-// mount options that are not persisted.
+// is gone or terminal, it reads the mount args from the HFMount CRD and
+// recreates the pod, then rebinds all stale targets.
 func (m *PodMounter) tryHealSource(mountPath string) {
 	volumeID := filepath.Base(mountPath)
 	podName := mountPodPrefix + volumeID
@@ -389,10 +389,55 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 		return
 	}
 
-	// Pod is gone or terminal. We cannot recreate it here because we don't
-	// have the original mount arguments. Log the situation so operators know
-	// the workload needs a remount (delete + recreate the consuming pod).
-	klog.Warningf("tryHealSource: mount pod %s is gone/terminal with active refs at %s, workloads need remount", podName, mountPath)
+	// Pod is gone or terminal. Read mount args from the CRD to recreate it.
+	crdName := hfMountName(volumeID)
+	spec, crdErr := m.crd.get(ctx, crdName)
+	if crdErr != nil {
+		klog.Warningf("tryHealSource: cannot read HFMount CRD %s, cannot recreate pod: %v", crdName, crdErr)
+		return
+	}
+
+	rawArgs, _ := spec["mountArgs"].([]interface{})
+	if len(rawArgs) == 0 {
+		klog.Warningf("tryHealSource: HFMount CRD %s has no mountArgs, cannot recreate pod", crdName)
+		return
+	}
+
+	var args []string
+	for _, a := range rawArgs {
+		if s, ok := a.(string); ok {
+			args = append(args, s)
+		}
+	}
+
+	sourceType, _ := spec["sourceType"].(string)
+	sourceID, _ := spec["sourceID"].(string)
+
+	klog.Infof("tryHealSource: recreating mount pod %s from CRD %s", podName, crdName)
+
+	// Delete the stale pod if it still exists.
+	if err == nil {
+		_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+		if waitErr := m.waitForPodDeletion(ctx, podName); waitErr != nil {
+			klog.Warningf("tryHealSource: timed out waiting for pod %s deletion: %v", podName, waitErr)
+			return
+		}
+	}
+
+	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
+	if _, createErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, newPod, metav1.CreateOptions{}); createErr != nil {
+		klog.Warningf("tryHealSource: failed to recreate pod %s: %v", podName, createErr)
+		return
+	}
+
+	if runErr := m.waitForPodRunning(ctx, podName); runErr != nil {
+		klog.Warningf("tryHealSource: recreated pod %s did not become running: %v", podName, runErr)
+		_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+		return
+	}
+
+	klog.Infof("tryHealSource: pod %s recreated, rebinding targets", podName)
+	m.rebindTargets(mountPath)
 }
 
 // rebindTargets checks all targets bound to the given source mount path.
@@ -481,7 +526,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 
 	// Create HFMount CRD (best-effort, source of truth for kubectl visibility).
 	crdName := hfMountName(volumeID)
-	logCRDError("create", crdName, m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath))
+	logCRDError("create", crdName, m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args))
 
 	createdPod := false
 	cleanupPod := false
