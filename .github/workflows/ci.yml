@@ -95,8 +95,7 @@ jobs:
             --namespace default \
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
-            --set image.pullPolicy=Never \
-            --set mountMode=pod
+            --set image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
 
@@ -405,56 +404,6 @@ jobs:
           kubectl logs test-ephemeral | grep model_type
           echo "SUCCESS: Ephemeral volume works"
 
-      - name: "Process mode fallback"
-        run: |
-          echo "=== Installing chart in process mode ==="
-          helm upgrade hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default \
-            --set image.repository=hf-csi-driver \
-            --set image.tag=test \
-            --set image.pullPolicy=Never \
-            --set mountMode=process
-          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
-            --namespace default --timeout=60s
-
-          echo "=== Cleaning up old resources ==="
-          kubectl delete pod test-remount test-multi test-ephemeral --ignore-not-found
-          kubectl delete pvc test-pvc-2 --ignore-not-found
-          kubectl delete pv test-pv-2 --ignore-not-found
-
-          echo "=== Mounting in process mode ==="
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-process-mode
-          spec:
-            containers:
-            - name: test
-              image: busybox:latest
-              command: ["sh", "-c", "cat /data/config.json"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-process-mode --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
-          kubectl logs test-process-mode | grep model_type
-          echo "SUCCESS: Process mode fallback works"
-
-          echo "=== Verifying NO mount pods in process mode ==="
-          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-          if [ -n "$MOUNT_PODS" ]; then
-            echo "WARNING: Found mount pods in process mode (leftover?): $MOUNT_PODS"
-          else
-            echo "SUCCESS: No mount pods in process mode (as expected)"
-          fi
-
       - name: Debug on failure
         if: failure()
         run: |
@@ -466,7 +415,6 @@ jobs:
           kubectl describe pod test-remount 2>/dev/null || true
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
-          kubectl describe pod test-process-mode 2>/dev/null || true
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
           echo "=== Mount pods ==="

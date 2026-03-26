@@ -38,8 +38,6 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir={{ .Values.cacheDir }}
-            - --mount-mode={{ .Values.mountMode }}
-            {{- if eq .Values.mountMode "pod" }}
             - --mount-image={{ .Values.image.repository }}:{{ .Values.image.tag }}
             - --mount-pull-policy={{ .Values.image.pullPolicy }}
             {{- with .Values.imagePullSecrets }}
@@ -47,7 +45,6 @@ spec:
             {{- end }}
             - --mount-service-account={{ include "hf-csi-driver.fullname" . }}
             - --namespace={{ .Release.Namespace }}
-            {{- end }}
             - --v={{ .Values.logVerbosity }}
           env:
             - name: CSI_NODE_NAME

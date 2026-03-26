@@ -27,7 +27,6 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir=/var/lib/hf-csi-driver/cache
-            - --mount-mode=pod
             - --mount-image=ghcr.io/huggingface/hf-csi-driver:v0.1.0
             - --mount-pull-policy=IfNotPresent
             - --v=4

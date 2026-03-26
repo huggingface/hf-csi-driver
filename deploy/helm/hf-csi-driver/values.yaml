@@ -7,8 +7,6 @@ logVerbosity: 4
 
 cacheDir: /var/lib/hf-csi-driver/cache
 
-# Mount mode: "process" (child process) or "pod" (dedicated mount pods, survives driver restarts)
-mountMode: pod
 
 nodeSelector:
   kubernetes.io/os: linux
