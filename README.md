@@ -7,20 +7,22 @@ Wraps [hf-mount](https://github.com/huggingface/hf-mount) (Rust FUSE filesystem)
 ## How it works
 
 ```
-Pod → kubelet → CSI NodePublishVolume → hf-mount-fuse → FUSE mount
-                CSI NodeUnpublishVolume → SIGTERM → fusermount -uz
+Pod -> kubelet -> CSI NodePublishVolume -> mount pod (hf-mount-fuse) -> FUSE mount -> bind mount to target
+                  CSI NodeUnpublishVolume -> unmount bind + delete mount pod
 ```
 
-- **Node-only driver**: single DaemonSet, no controller, no provisioner
+- **Pod-based mounting**: each FUSE mount runs in a dedicated Kubernetes pod that survives CSI driver restarts
+- **Self-healing**: mount pods are automatically recreated from CRD state if they crash
+- **HFMount CRD**: tracks mount state (args, workloads, targets) as the source of truth
 - **Static provisioning**: users create PV/PVC pairs pointing to a bucket or repo
-- **HF token**: passed via Kubernetes Secret through `nodePublishSecretRef`
+- **HF token**: passed via Kubernetes Secret through `nodePublishSecretRef`, refreshed live via `requiresRepublish`
 - **Mount flags passthrough**: PV `mountOptions` are forwarded as `--flag` arguments to hf-mount-fuse
 
 ## Prerequisites
 
 - Kubernetes 1.26+
 - FUSE support on nodes (`/dev/fuse` available, `fuse3` installed)
-- The CSI driver container runs as `privileged` (required for FUSE + mount propagation)
+- The CSI driver and mount pod containers run as `privileged` (required for FUSE + mount propagation)
 
 ## Installation
 
@@ -197,6 +199,7 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `cacheSize` | no | `10000000000` | Max cache size in bytes |
 | `pollIntervalSecs` | no | `30` | Remote change polling interval |
 | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
+| `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
 
 ## Mount options
 
@@ -231,16 +234,20 @@ graph TD
         CSI["<b>hf-csi-plugin</b><br/><i>Go / CSI gRPC server</i>"]
         REG["<b>node-driver-registrar</b><br/><i>sidecar</i>"]
         LP["<b>liveness-probe</b><br/><i>sidecar</i>"]
+    end
 
-        CSI -->|NodePublishVolume| FUSE["<b>hf-mount-fuse</b><br/><i>Rust / one process per volume</i>"]
-        CSI -->|NodeUnpublishVolume| FUSE
+    subgraph MP["Mount Pods (per volume)"]
+        FUSE["<b>hf-mount-fuse</b><br/><i>Rust / dedicated pod per mount</i>"]
     end
 
     KUBELET["kubelet"] -->|CSI gRPC| CSI
     REG -->|registration| KUBELET
+    CSI -->|"create/delete"| FUSE
+    CSI -->|"create/update"| CRD["HFMount CRD"]
     FUSE --> DEV["/dev/fuse"]
-    DEV --> MNT["/var/lib/kubelet/pods/.../mount"]
-    MNT --> POD["Pod volume mount"]
+    DEV --> SRC["/var/lib/hf-csi-driver/mnt/&lt;id&gt;"]
+    SRC -->|bind mount| TGT["/var/lib/kubelet/pods/.../mount"]
+    TGT --> POD["Pod volume mount"]
 
     FUSE -->|lazy fetch| HF["HF Storage"]
     FUSE -->|metadata + commits| HUB["Hub API"]
