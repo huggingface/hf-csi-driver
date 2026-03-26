@@ -47,6 +47,9 @@ func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, 
 			"metadata": map[string]interface{}{
 				"name":      name,
 				"namespace": c.namespace,
+				"labels": map[string]interface{}{
+					labelNode: sanitizeLabelValue(nodeName),
+				},
 			},
 			"spec": map[string]interface{}{
 				"nodeName":     nodeName,
@@ -124,18 +127,13 @@ func (c *hfMountClient) removeWorkload(ctx context.Context, name, targetPath str
 
 // list returns all HFMount CRs in the namespace filtered by node name.
 func (c *hfMountClient) list(ctx context.Context, nodeName string) ([]unstructured.Unstructured, error) {
-	list, err := c.resource().List(ctx, metav1.ListOptions{})
+	list, err := c.resource().List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", labelNode, sanitizeLabelValue(nodeName)),
+	})
 	if err != nil {
 		return nil, err
 	}
-	var result []unstructured.Unstructured
-	for _, item := range list.Items {
-		spec, _ := item.Object["spec"].(map[string]interface{})
-		if spec["nodeName"] == nodeName {
-			result = append(result, item)
-		}
-	}
-	return result, nil
+	return list.Items, nil
 }
 
 // removeStaleWorkloads removes workloads whose pod UID is not in the given

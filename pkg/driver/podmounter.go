@@ -40,6 +40,13 @@ const (
 	podDeletionTimeout = 60 * time.Second
 )
 
+// refMutex is a reference-counted mutex that can be safely cleaned up
+// when no goroutine holds a reference to it.
+type refMutex struct {
+	sync.Mutex
+	refs int
+}
+
 // PodMounter implements Mounter by delegating FUSE mounts to dedicated Kubernetes pods.
 // Mount pods survive CSI driver restarts, avoiding I/O errors for workloads.
 //
@@ -208,6 +215,18 @@ func (m *PodMounter) runCleanupScan() {
 	}
 
 	ctx := context.TODO()
+
+	// Single List to fetch all mount pods on this node, avoiding N individual Gets.
+	podList, listErr := m.client.CoreV1().Pods(m.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s", labelApp, labelAppValue, labelNode, sanitizeLabelValue(m.nodeID)),
+	})
+	podsByName := make(map[string]*corev1.Pod)
+	if listErr == nil {
+		for i := range podList.Items {
+			podsByName[podList.Items[i].Name] = &podList.Items[i]
+		}
+	}
+
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -218,25 +237,19 @@ func (m *PodMounter) runCleanupScan() {
 		mounted, mountErr := m.checker.IsMountPoint(mountPath)
 		corrupted := mountErr != nil && mount.IsCorruptedMnt(mountErr)
 		if mountErr != nil && !corrupted {
-			continue // Unexpected error, skip.
+			continue
 		}
 		if !mounted && !corrupted {
-			continue // Not a mount point, skip.
+			continue
 		}
 
-		// Check if the pod still exists and its phase.
-		pod, getErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
-		if getErr != nil && !errors.IsNotFound(getErr) {
-			continue // API error, skip.
-		}
-
-		podGone := errors.IsNotFound(getErr)
-		podTerminal := !podGone && pod != nil &&
-			(pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded)
-		podTerminating := !podGone && pod != nil && pod.DeletionTimestamp != nil
+		pod, exists := podsByName[podName]
+		podGone := !exists
+		podTerminal := exists && isPodTerminal(pod)
+		podTerminating := exists && pod.DeletionTimestamp != nil
 
 		if !podGone && !podTerminal && !podTerminating {
-			continue // Pod exists and is healthy.
+			continue
 		}
 
 		if podGone {
@@ -265,8 +278,10 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		return
 	}
 
-	// Build a set of live pod UIDs across the cluster.
-	allPods, listErr := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	// Build a set of live pod UIDs on this node.
+	allPods, listErr := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + m.nodeID,
+	})
 	if listErr != nil {
 		klog.V(4).Infof("cleanupStaleCRDs: cannot list pods: %v", listErr)
 		return
@@ -332,7 +347,7 @@ func (m *PodMounter) handlePodUpdate(oldPod, newPod *corev1.Pod) {
 		go m.rebindTargets(mountPath)
 	}
 
-	if phaseChanged && (newPod.Status.Phase == corev1.PodFailed || newPod.Status.Phase == corev1.PodSucceeded) {
+	if phaseChanged && isPodTerminal(newPod) {
 		klog.Warningf("Mount pod %s entered terminal phase %s, cleaning up", newPod.Name, newPod.Status.Phase)
 		go m.cleanupSource(mountPath)
 	}
@@ -352,17 +367,7 @@ func (m *PodMounter) handlePodDelete(pod *corev1.Pod) {
 // ready at startup). When the informer first sees them running, we try to
 // rebuild binds from mountinfo.
 func (m *PodMounter) lateAdopt(mountPath string) {
-	// Wait briefly for mount to appear.
-	for i := 0; i < 15; i++ {
-		mounted, err := m.checker.IsMountPoint(mountPath)
-		if err == nil && mounted {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	mounted, _ := m.checker.IsMountPoint(mountPath)
-	if !mounted {
+	if !m.pollUntilMounted(mountPath, 15) {
 		return
 	}
 
@@ -451,7 +456,7 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 
 	// If the pod still exists in a non-terminal state, just rebind.
 	if err == nil && pod.DeletionTimestamp == nil &&
-		pod.Status.Phase != corev1.PodFailed && pod.Status.Phase != corev1.PodSucceeded {
+		!isPodTerminal(pod) {
 		m.rebindTargets(mountPath)
 		return
 	}
@@ -517,17 +522,7 @@ func (m *PodMounter) rebindTargets(mountPath string) {
 		m.releaseSourceLock(mountPath, lk)
 	}()
 
-	// Wait for FUSE mount to appear after pod restart.
-	for i := 0; i < 30; i++ {
-		mounted, err := m.checker.IsMountPoint(mountPath)
-		if err == nil && mounted {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	mounted, err := m.checker.IsMountPoint(mountPath)
-	if err != nil || !mounted {
+	if !m.pollUntilMounted(mountPath, 30) {
 		klog.Warningf("FUSE mount not available at %s after pod restart", mountPath)
 		return
 	}
@@ -623,9 +618,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 				// CRD likely pre-exists too and belongs to the previous mount.
 				return fmt.Errorf("failed to get existing mount pod %s: %w", podName, getErr)
 			}
-			needsReplace := existing.DeletionTimestamp != nil ||
-				existing.Status.Phase == corev1.PodFailed ||
-				existing.Status.Phase == corev1.PodSucceeded
+			needsReplace := existing.DeletionTimestamp != nil || isPodTerminal(existing)
 			if needsReplace {
 				klog.Infof("Mount pod %s is stale (phase=%s, deleting=%v), replacing",
 					podName, existing.Status.Phase, existing.DeletionTimestamp != nil)
@@ -643,7 +636,6 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 				klog.V(4).Infof("Mount pod %s already exists, reusing", podName)
 			}
 		} else {
-			cleanupPod = true
 			cleanupCRD = true
 			return fmt.Errorf("failed to create mount pod %s: %w", podName, err)
 		}
@@ -839,21 +831,13 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	}
 
 	if !mounted {
-		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
+		if isPodTerminal(pod) {
 			klog.Warningf("Recovery: pod %s is %s with no mount, deleting", pod.Name, pod.Status.Phase)
 			_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{})
 			return
 		}
-		// Pod is running but mount not ready yet. Wait up to 30s for it.
 		klog.Infof("Recovery: pod %s running, waiting for mount at %s", pod.Name, mountPath)
-		for i := 0; i < 30; i++ {
-			time.Sleep(time.Second)
-			mounted, err = m.checker.IsMountPoint(mountPath)
-			if err == nil && mounted {
-				break
-			}
-		}
-		if !mounted {
+		if !m.pollUntilMounted(mountPath, 30) {
 			klog.Warningf("Recovery: mount never appeared at %s for pod %s, skipping", mountPath, pod.Name)
 			return
 		}
@@ -1098,6 +1082,24 @@ func (m *PodMounter) waitForPodDeletion(ctx context.Context, name string) error 
 			}
 		}
 	}
+}
+
+// pollUntilMounted polls IsMountPoint until the path is mounted or the
+// attempt limit is reached. Returns true if mounted.
+func (m *PodMounter) pollUntilMounted(path string, attempts int) bool {
+	for i := 0; i < attempts; i++ {
+		mounted, err := m.checker.IsMountPoint(path)
+		if err == nil && mounted {
+			return true
+		}
+		time.Sleep(time.Second)
+	}
+	mounted, _ := m.checker.IsMountPoint(path)
+	return mounted
+}
+
+func isPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded
 }
 
 // totalRestartCount returns the sum of restartCount across all container statuses.

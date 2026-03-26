@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
 const (
@@ -32,13 +31,6 @@ type Mounter interface {
 	Recover() error
 	// Start launches background goroutines (e.g. pod watchers).
 	Start(stopCh <-chan struct{})
-}
-
-// refMutex is a reference-counted mutex that can be safely cleaned up
-// when no goroutine holds a reference to it.
-type refMutex struct {
-	sync.Mutex
-	refs int
 }
 
 func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string, error) {
