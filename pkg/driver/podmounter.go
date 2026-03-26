@@ -232,15 +232,16 @@ func (m *PodMounter) runCleanupScan() {
 		podGone := errors.IsNotFound(getErr)
 		podTerminal := !podGone && pod != nil &&
 			(pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded)
+		podTerminating := !podGone && pod != nil && pod.DeletionTimestamp != nil
 
-		if !podGone && !podTerminal {
+		if !podGone && !podTerminal && !podTerminating {
 			continue // Pod exists and is healthy.
 		}
 
 		if podGone {
 			klog.Infof("Periodic cleanup: orphaned mount at %s (pod %s gone)", mountPath, podName)
 		} else {
-			klog.Infof("Periodic cleanup: mount at %s with terminal pod %s (%s)", mountPath, podName, pod.Status.Phase)
+			klog.Infof("Periodic cleanup: mount at %s with stale pod %s (phase=%s, deleting=%v)", mountPath, podName, pod.Status.Phase, pod.DeletionTimestamp != nil)
 		}
 		m.cleanupSource(mountPath)
 	}
@@ -338,7 +339,8 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 		return
 	}
 	if len(mountRefs) > 0 {
-		klog.V(4).Infof("Source %s still has %d kernel refs, deferring cleanup", mountPath, len(mountRefs))
+		klog.Infof("Source %s still has %d kernel refs, attempting pod recreation", mountPath, len(mountRefs))
+		go m.recreateAndRebind(mountPath)
 		return
 	}
 
@@ -360,6 +362,34 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 	for _, target := range staleTargets {
 		_ = fuseUnmount(target)
 	}
+}
+
+// recreateAndRebind attempts to recreate a mount pod whose source still has
+// active bind refs (workloads are still using it). This handles the case where
+// a mount pod dies but workloads are still running, we try to bring the mount
+// back instead of leaving the workloads stuck on ENOTCONN.
+func (m *PodMounter) recreateAndRebind(mountPath string) {
+	volumeID := filepath.Base(mountPath)
+	podName := mountPodPrefix + volumeID
+
+	ctx := context.TODO()
+	pod, err := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		klog.Warningf("recreateAndRebind: cannot get pod %s: %v", podName, err)
+		return
+	}
+
+	// If the pod still exists in a non-terminal state, just rebind.
+	if err == nil && pod.DeletionTimestamp == nil &&
+		pod.Status.Phase != corev1.PodFailed && pod.Status.Phase != corev1.PodSucceeded {
+		m.rebindTargets(mountPath)
+		return
+	}
+
+	// Pod is gone or terminal. We cannot recreate it here because we don't
+	// have the original mount arguments. Log the situation so operators know
+	// the workload needs a remount (delete + recreate the consuming pod).
+	klog.Warningf("recreateAndRebind: mount pod %s is gone/terminal with active refs at %s, workloads need remount", podName, mountPath)
 }
 
 // rebindTargets checks all targets bound to the given source mount path.
@@ -451,15 +481,22 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	logCRDError("create", crdName, m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath))
 
 	createdPod := false
+	cleanup := false
+	defer func() {
+		if cleanup {
+			klog.Warningf("Mount failed, cleaning up pod %s", podName)
+			_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+			logCRDError("delete", crdName, m.crd.delete(ctx, crdName))
+		}
+	}()
+
 	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
 	klog.Infof("Creating mount pod %s for %s %s", podName, sourceType, sourceID)
 	if _, err := m.client.CoreV1().Pods(m.namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		if errors.IsAlreadyExists(err) {
-			// Pod may be left over from a previous mount or still terminating.
-			// Check if it's being deleted; if so, wait for deletion to complete
-			// before retrying to avoid reusing a terminating pod.
 			existing, getErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
 			if getErr != nil {
+				cleanup = true
 				return fmt.Errorf("failed to get existing mount pod %s: %w", podName, getErr)
 			}
 			needsReplace := existing.DeletionTimestamp != nil ||
@@ -472,9 +509,11 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 					_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 				}
 				if waitErr := m.waitForPodDeletion(ctx, podName); waitErr != nil {
+					cleanup = true
 					return fmt.Errorf("timed out waiting for stale pod %s to be deleted: %w", podName, waitErr)
 				}
 				if _, retryErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, pod, metav1.CreateOptions{}); retryErr != nil {
+					cleanup = true
 					return fmt.Errorf("failed to re-create mount pod %s: %w", podName, retryErr)
 				}
 				createdPod = true
@@ -482,20 +521,14 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 				klog.V(4).Infof("Mount pod %s already exists, reusing", podName)
 			}
 		} else {
+			cleanup = true
 			return fmt.Errorf("failed to create mount pod %s: %w", podName, err)
 		}
 	} else {
 		createdPod = true
 	}
 
-	cleanup := createdPod
-	defer func() {
-		if cleanup {
-			klog.Warningf("Mount failed, cleaning up pod %s", podName)
-			_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
-			logCRDError("delete", crdName, m.crd.delete(ctx, crdName))
-		}
-	}()
+	cleanup = createdPod
 
 	if err := m.waitForPodRunning(ctx, podName); err != nil {
 		return fmt.Errorf("mount pod %s did not become running: %w", podName, err)
@@ -658,6 +691,12 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 		return
 	}
 
+	// Skip pods that are being deleted or in a terminal phase.
+	if pod.DeletionTimestamp != nil {
+		klog.Warningf("Recovery: pod %s is terminating, skipping", pod.Name)
+		return
+	}
+
 	mounted, err := m.checker.IsMountPoint(mountPath)
 	if err != nil {
 		klog.Warningf("Recovery: mount check failed for %s (pod %s): %v", mountPath, pod.Name, err)
@@ -716,6 +755,10 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	m.mu.Unlock()
 
 	klog.Infof("Recovery: re-adopted mount pod %s with mount at %s (%d bind refs)", pod.Name, mountPath, len(refs))
+
+	// Check for stale binds that need rebinding (e.g. mount pod restarted
+	// while the CSI driver was down, so the FUSE mount object changed).
+	go m.rebindTargets(mountPath)
 }
 
 func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string) *corev1.Pod {
