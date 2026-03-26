@@ -1097,18 +1097,20 @@ func (m *PodMounter) waitForMount(path, podName string) error {
 			if mounted {
 				return nil
 			}
-			// Check if the mount pod crashed while we wait.
+			// Check if the mount pod crashed or was deleted while we wait.
 			pod, podErr := m.client.CoreV1().Pods(m.namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+			if errors.IsNotFound(podErr) {
+				return fmt.Errorf("mount pod %s was deleted before mount appeared", podName)
+			}
 			if podErr != nil {
 				continue
 			}
 			if isPodTerminal(pod) {
 				return fmt.Errorf("mount pod %s failed (phase=%s) before mount appeared", podName, pod.Status.Phase)
 			}
-			for _, cs := range pod.Status.ContainerStatuses {
-				if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
-					return fmt.Errorf("mount pod %s is in CrashLoopBackOff (%d restarts)", podName, cs.RestartCount)
-				}
+			restarts := totalRestartCount(pod)
+			if restarts >= crashLoopRestartThreshold {
+				return fmt.Errorf("mount pod %s keeps crashing (%d restarts)", podName, restarts)
 			}
 		}
 	}
