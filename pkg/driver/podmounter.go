@@ -776,7 +776,7 @@ func (m *PodMounter) IsMountPoint(target string) (bool, error) {
 	return m.checker.IsMountPoint(target)
 }
 
-const crashLoopRestartThreshold int32 = 3
+const crashLoopRestartThreshold int32 = 2
 
 // CheckHealth returns an error if the mount pod backing this target is in
 // CrashLoopBackOff (repeated crashes). Kubelet calls NodePublishVolume
