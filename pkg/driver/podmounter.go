@@ -307,6 +307,15 @@ func (m *PodMounter) cleanupStaleCRDs() {
 			continue
 		}
 
+		// No workloads remain. But if the CRD was just created (Mount in progress,
+		// addWorkload hasn't been called yet), skip it to avoid killing a mount pod
+		// that is still starting up.
+		creationTime := item.GetCreationTimestamp().Time
+		if time.Since(creationTime) < 5*time.Minute {
+			klog.V(4).Infof("cleanupStaleCRDs: CRD %s has no workloads but is recent (%s old), skipping", name, time.Since(creationTime).Round(time.Second))
+			continue
+		}
+
 		// No workloads remain. If mount pod is also gone, clean everything.
 		_, podErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
 		if errors.IsNotFound(podErr) {
