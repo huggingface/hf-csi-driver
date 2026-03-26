@@ -404,6 +404,59 @@ jobs:
           kubectl logs test-ephemeral | grep model_type
           echo "SUCCESS: Ephemeral volume works"
 
+      - name: "Mount failure: non-existent repo"
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-mount-fail
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ["sleep", "300"]
+              volumeMounts:
+              - name: model
+                mountPath: /model
+                readOnly: true
+            volumes:
+            - name: model
+              csi:
+                driver: hf.csi.huggingface.co
+                volumeAttributes:
+                  sourceType: repo
+                  sourceId: this-repo/does-not-exist-at-all
+            restartPolicy: Never
+          EOF
+
+          echo "=== Waiting for FailedMount event ==="
+          for i in $(seq 1 60); do
+            EVENTS=$(kubectl get events --field-selector involvedObject.name=test-mount-fail,reason=FailedMount -o jsonpath='{.items[*].message}' 2>/dev/null)
+            if [ -n "$EVENTS" ]; then
+              echo "FailedMount event found after ${i}s: $EVENTS"
+              break
+            fi
+            sleep 2
+          done
+
+          EVENTS=$(kubectl get events --field-selector involvedObject.name=test-mount-fail,reason=FailedMount -o jsonpath='{.items[*].message}' 2>/dev/null)
+          if [ -z "$EVENTS" ]; then
+            echo "ERROR: No FailedMount event after 120s"
+            kubectl describe pod test-mount-fail
+            exit 1
+          fi
+
+          echo "=== Verifying error message mentions mount pod crash ==="
+          if echo "$EVENTS" | grep -q "keeps crashing\|CrashLoopBackOff\|failed.*phase"; then
+            echo "SUCCESS: FailedMount event has descriptive crash message"
+          else
+            echo "WARNING: FailedMount event present but message may not be specific: $EVENTS"
+          fi
+
+          kubectl delete pod test-mount-fail --ignore-not-found
+          echo "SUCCESS: Mount failure detection works"
+
       - name: Debug on failure
         if: failure()
         run: |
@@ -415,6 +468,7 @@ jobs:
           kubectl describe pod test-remount 2>/dev/null || true
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
+          kubectl describe pod test-mount-fail 2>/dev/null || true
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
           echo "=== Mount pods ==="
