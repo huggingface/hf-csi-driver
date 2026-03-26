@@ -1,3 +1,0 @@
-[submodule "hf-mount"]
-	path = hf-mount
-	url = https://github.com/huggingface/hf-mount.git
