@@ -135,6 +135,22 @@ func (c *hfMountClient) updateStatus(ctx context.Context, name, phase, message s
 	return err
 }
 
+// list returns all HFMount CRs in the namespace filtered by node name.
+func (c *hfMountClient) list(ctx context.Context, nodeName string) ([]unstructured.Unstructured, error) {
+	list, err := c.resource().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var result []unstructured.Unstructured
+	for _, item := range list.Items {
+		spec, _ := item.Object["spec"].(map[string]interface{})
+		if spec["nodeName"] == nodeName {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
 // delete deletes the HFMount CR.
 func (c *hfMountClient) delete(ctx context.Context, name string) error {
 	return c.resource().Delete(ctx, name, metav1.DeleteOptions{})

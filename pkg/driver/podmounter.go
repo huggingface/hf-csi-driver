@@ -196,6 +196,7 @@ func (m *PodMounter) periodicCleanup(stopCh <-chan struct{}) {
 			return
 		case <-ticker.C:
 			m.runCleanupScan()
+			m.cleanupStaleCRDs()
 		}
 	}
 }
@@ -244,6 +245,75 @@ func (m *PodMounter) runCleanupScan() {
 			klog.Infof("Periodic cleanup: mount at %s with stale pod %s (phase=%s, deleting=%v)", mountPath, podName, pod.Status.Phase, pod.DeletionTimestamp != nil)
 		}
 		m.cleanupSource(mountPath)
+	}
+}
+
+// cleanupStaleCRDs lists all HFMount CRDs for this node and removes stale
+// targets (paths that are no longer mount points). If all targets are gone and
+// the mount pod is also gone, the CRD is deleted. This is equivalent to AWS's
+// StaleAttachmentCleaner.
+func (m *PodMounter) cleanupStaleCRDs() {
+	ctx := context.TODO()
+	crds, err := m.crd.list(ctx, m.nodeID)
+	if err != nil {
+		klog.V(4).Infof("cleanupStaleCRDs: list failed: %v", err)
+		return
+	}
+
+	for _, item := range crds {
+		name := item.GetName()
+		spec, _ := item.Object["spec"].(map[string]interface{})
+		targets, _ := spec["targets"].([]interface{})
+		mountPath, _ := spec["mountPath"].(string)
+
+		// Remove stale targets (paths no longer mounted).
+		var liveTargets []interface{}
+		for _, t := range targets {
+			path, _ := t.(string)
+			if path == "" {
+				continue
+			}
+			mounted, err := m.checker.IsMountPoint(path)
+			if err == nil && mounted {
+				liveTargets = append(liveTargets, t)
+			}
+		}
+
+		staleCount := len(targets) - len(liveTargets)
+		if staleCount == 0 {
+			continue
+		}
+
+		klog.Infof("cleanupStaleCRDs: CRD %s has %d stale targets (of %d)", name, staleCount, len(targets))
+
+		// If no live targets remain, check if the mount pod is also gone.
+		if len(liveTargets) == 0 {
+			podName, _ := spec["mountPodName"].(string)
+			_, podErr := m.client.CoreV1().Pods(m.namespace).Get(ctx, podName, metav1.GetOptions{})
+			if errors.IsNotFound(podErr) {
+				// Pod and all targets gone: clean up everything.
+				if mountPath != "" {
+					_ = fuseUnmount(mountPath)
+					_ = os.Remove(mountPath)
+				}
+				logCRDError("delete", name, m.crd.delete(ctx, name))
+				klog.Infof("cleanupStaleCRDs: deleted orphaned CRD %s", name)
+				continue
+			}
+		}
+
+		// Update the CRD with remaining live targets.
+		spec["targets"] = liveTargets
+		logCRDError("updateTargets", name, func() error {
+			obj, err := m.crd.resource().Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			objSpec, _ := obj.Object["spec"].(map[string]interface{})
+			objSpec["targets"] = liveTargets
+			_, err = m.crd.resource().Update(ctx, obj, metav1.UpdateOptions{})
+			return err
+		}())
 	}
 }
 
@@ -811,15 +881,34 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 		time.Sleep(time.Second)
 	}
 	if refErr != nil {
-		klog.Errorf("Recovery: cannot enumerate mount refs for %s after retries, skipping pod %s (binds may be incomplete)", mountPath, pod.Name)
-		return
+		klog.Warningf("Recovery: mountinfo failed for %s, falling back to CRD targets", mountPath)
 	}
-	m.mu.Lock()
+
+	// Merge mountinfo refs with CRD targets for a complete picture.
+	refSet := make(map[string]bool)
 	for _, ref := range refs {
 		if ref != mountPath {
-			m.binds[ref] = mountPath
-			klog.V(4).Infof("Recovery: restored bind %s -> %s", ref, mountPath)
+			refSet[ref] = true
 		}
+	}
+
+	// Read targets from CRD as fallback/supplement.
+	volumeID := filepath.Base(mountPath)
+	crdName := hfMountName(volumeID)
+	if spec, crdErr := m.crd.get(ctx, crdName); crdErr == nil {
+		if crdTargets, _ := spec["targets"].([]interface{}); len(crdTargets) > 0 {
+			for _, t := range crdTargets {
+				if path, ok := t.(string); ok && path != "" {
+					refSet[path] = true
+				}
+			}
+		}
+	}
+
+	m.mu.Lock()
+	for ref := range refSet {
+		m.binds[ref] = mountPath
+		klog.V(4).Infof("Recovery: restored bind %s -> %s", ref, mountPath)
 	}
 	m.mu.Unlock()
 
