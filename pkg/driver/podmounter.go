@@ -1092,9 +1092,8 @@ func (m *PodMounter) waitForMount(path, podName string) error {
 			mounted, err := m.checker.IsMountPoint(path)
 			if err != nil {
 				lastErr = err
-				continue
 			}
-			if mounted {
+			if err == nil && mounted {
 				return nil
 			}
 			// Check if the mount pod crashed or was deleted while we wait.
