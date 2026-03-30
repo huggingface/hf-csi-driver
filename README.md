@@ -200,6 +200,7 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `pollIntervalSecs` | no | `30` | Remote change polling interval |
 | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
 | `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
+| `mountFlags` | no | | Comma-separated hf-mount flags for inline ephemeral volumes (e.g. `advanced-writes,uid=1000`) |
 
 ## Mount options
 
@@ -211,6 +212,15 @@ mountOptions:
   - uid=1000
   - gid=1000
   - advanced-writes
+```
+
+For inline ephemeral volumes (where `mountOptions` is not available in the CSI volume spec), use the `mountFlags` volume attribute instead:
+
+```yaml
+volumeAttributes:
+  sourceType: bucket
+  sourceId: username/my-bucket
+  mountFlags: "advanced-writes,uid=1000"
 ```
 
 ## Building
