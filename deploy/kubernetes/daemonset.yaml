@@ -22,7 +22,7 @@ spec:
       serviceAccountName: hf-csi-driver
       containers:
         - name: hf-csi-plugin
-          image: ghcr.io/huggingface/hf-csi-driver:v0.3.0
+          image: ghcr.io/huggingface/hf-csi-driver:v0.3.1
           args:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
