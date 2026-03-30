@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -26,6 +27,7 @@ const (
 	volumeCtxPollInterval = "pollIntervalSecs"
 	volumeCtxMetadataTtl  = "metadataTtlMs"
 	volumeCtxTokenKey     = "tokenKey"
+	volumeCtxMountFlags   = "mountFlags"
 	volumeCtxPodUID       = "csi.storage.k8s.io/pod.uid"
 )
 
@@ -121,6 +123,17 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	// Pass mount flags straight through to hf-mount-fuse.
 	for _, flag := range volCap.GetMount().GetMountFlags() {
 		opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
+	}
+
+	// Also accept comma-separated mount flags from volumeAttributes
+	// (the only way to pass flags for inline ephemeral volumes).
+	if raw := volCtx[volumeCtxMountFlags]; raw != "" {
+		for _, flag := range strings.Split(raw, ",") {
+			flag = strings.TrimSpace(flag)
+			if flag != "" {
+				opts.ExtraArgs = append(opts.ExtraArgs, "--"+flag)
+			}
+		}
 	}
 
 	if err := d.mounter.Mount(sourceType, sourceID, target, opts); err != nil {

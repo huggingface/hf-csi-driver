@@ -241,6 +241,43 @@ func TestNodePublishVolume_CustomTokenKey(t *testing.T) {
 	}
 }
 
+func TestNodePublishVolume_MountFlagsFromVolumeAttributes(t *testing.T) {
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+	target := filepath.Join(t.TempDir(), "target")
+
+	resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+		},
+		VolumeContext: map[string]string{
+			"sourceType": "bucket",
+			"sourceId":   "user/my-bucket",
+			"mountFlags": "advanced-writes",
+		},
+		Secrets: map[string]string{"token": "test-token"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	expectedExtra := []string{"--advanced-writes"}
+	if len(mock.lastOpts.ExtraArgs) != len(expectedExtra) {
+		t.Fatalf("expected ExtraArgs %v, got %v", expectedExtra, mock.lastOpts.ExtraArgs)
+	}
+	for i, a := range mock.lastOpts.ExtraArgs {
+		if a != expectedExtra[i] {
+			t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, expectedExtra[i], a)
+		}
+	}
+}
+
 func TestNodeUnpublishVolume_MissingFields(t *testing.T) {
 	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
