@@ -242,39 +242,53 @@ func TestNodePublishVolume_CustomTokenKey(t *testing.T) {
 }
 
 func TestNodePublishVolume_MountFlagsFromVolumeAttributes(t *testing.T) {
-	mock := newMockMounter()
-	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
-	target := filepath.Join(t.TempDir(), "target")
+	tests := []struct {
+		name     string
+		flags    string
+		expected []string
+	}{
+		{"single flag", "advanced-writes", []string{"--advanced-writes"}},
+		{"multiple flags", "advanced-writes,uid=1000,gid=1000", []string{"--advanced-writes", "--uid=1000", "--gid=1000"}},
+		{"whitespace trimmed", "advanced-writes, uid=1000", []string{"--advanced-writes", "--uid=1000"}},
+		{"trailing comma ignored", "advanced-writes,", []string{"--advanced-writes"}},
+		{"empty string", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockMounter()
+			d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+			target := filepath.Join(t.TempDir(), "target")
 
-	resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
-		VolumeId:   "vol1",
-		TargetPath: target,
-		VolumeCapability: &csi.VolumeCapability{
-			AccessType: &csi.VolumeCapability_Mount{
-				Mount: &csi.VolumeCapability_MountVolume{},
-			},
-		},
-		VolumeContext: map[string]string{
-			"sourceType": "bucket",
-			"sourceId":   "user/my-bucket",
-			"mountFlags": "advanced-writes",
-		},
-		Secrets: map[string]string{"token": "test-token"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	expectedExtra := []string{"--advanced-writes"}
-	if len(mock.lastOpts.ExtraArgs) != len(expectedExtra) {
-		t.Fatalf("expected ExtraArgs %v, got %v", expectedExtra, mock.lastOpts.ExtraArgs)
-	}
-	for i, a := range mock.lastOpts.ExtraArgs {
-		if a != expectedExtra[i] {
-			t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, expectedExtra[i], a)
-		}
+			resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+				VolumeId:   "vol1",
+				TargetPath: target,
+				VolumeCapability: &csi.VolumeCapability{
+					AccessType: &csi.VolumeCapability_Mount{
+						Mount: &csi.VolumeCapability_MountVolume{},
+					},
+				},
+				VolumeContext: map[string]string{
+					"sourceType": "bucket",
+					"sourceId":   "user/my-bucket",
+					"mountFlags": tt.flags,
+				},
+				Secrets: map[string]string{"token": "test-token"},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp == nil {
+				t.Fatal("expected non-nil response")
+			}
+			if len(mock.lastOpts.ExtraArgs) != len(tt.expected) {
+				t.Fatalf("expected ExtraArgs %v, got %v", tt.expected, mock.lastOpts.ExtraArgs)
+			}
+			for i, a := range mock.lastOpts.ExtraArgs {
+				if a != tt.expected[i] {
+					t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, tt.expected[i], a)
+				}
+			}
+		})
 	}
 }
 
