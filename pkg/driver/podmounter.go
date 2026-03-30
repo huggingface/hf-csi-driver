@@ -967,7 +967,7 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyOnFailure,
-			TerminationGracePeriodSeconds: ptr.To(int64(30)),
+			TerminationGracePeriodSeconds: ptr.To(int64(3600)),
 			Affinity: &corev1.Affinity{
 				NodeAffinity: &corev1.NodeAffinity{
 					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
