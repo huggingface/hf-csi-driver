@@ -49,6 +49,7 @@ spec:
             - --mount-pull-secrets={{ range $i, $s := . }}{{ if $i }},{{ end }}{{ $s.name }}{{ end }}
             {{- end }}
             - --mount-service-account={{ include "hf-csi-driver.fullname" . }}
+            - --mount-host-network={{ .Values.hfMount.hostNetwork }}
             - --namespace={{ .Release.Namespace }}
             - --v={{ .Values.logVerbosity }}
           env:

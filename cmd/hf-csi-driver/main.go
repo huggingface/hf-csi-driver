@@ -26,6 +26,7 @@ func main() {
 		mountPullPolicy  = flag.String("mount-pull-policy", "IfNotPresent", "Image pull policy for mount pods")
 		mountPullSecrets = flag.String("mount-pull-secrets", "", "Comma-separated image pull secret names for mount pods")
 		mountServiceAcct = flag.String("mount-service-account", "hf-csi-driver", "Service account for mount pods")
+		mountHostNetwork = flag.Bool("mount-host-network", true, "Enable hostNetwork on mount pods")
 		namespace        = flag.String("namespace", "kube-system", "Namespace for mount pods")
 		showVersion      = flag.Bool("version", false, "Print version and exit")
 	)
@@ -73,7 +74,7 @@ func main() {
 		}
 	}
 
-	mounter := driver.NewPodMounter(client, dynClient, *namespace, *nodeID, *mountImage, corev1.PullPolicy(*mountPullPolicy), pullSecrets, *mountServiceAcct, *cacheDir)
+	mounter := driver.NewPodMounter(client, dynClient, *namespace, *nodeID, *mountImage, corev1.PullPolicy(*mountPullPolicy), pullSecrets, *mountServiceAcct, *cacheDir, *mountHostNetwork)
 	drv := driver.NewDriver(*endpoint, *nodeID, *cacheDir, mounter)
 
 	sigCh := make(chan os.Signal, 1)
