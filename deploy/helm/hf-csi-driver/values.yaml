@@ -8,11 +8,11 @@ hfMount:
     repository: ghcr.io/huggingface/hf-mount-fuse
     tag: v0.2.0
     pullPolicy: IfNotPresent
+  hostNetwork: true
 
 logVerbosity: 4
 
 cacheDir: /var/lib/hf-csi-driver/cache
-
 
 updateStrategy:
   maxUnavailable: "100%"
