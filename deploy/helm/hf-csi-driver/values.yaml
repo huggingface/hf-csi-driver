@@ -14,6 +14,11 @@ logVerbosity: 4
 cacheDir: /var/lib/hf-csi-driver/cache
 
 
+updateStrategy:
+  maxUnavailable: "100%"
+
+hostNetwork: true
+
 nodeSelector:
   kubernetes.io/os: linux
 
