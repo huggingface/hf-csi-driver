@@ -6,7 +6,7 @@ image:
 hfMount:
   image:
     repository: ghcr.io/huggingface/hf-mount-fuse
-    tag: v0.2.0
+    tag: v0.2.1-rc.1
     pullPolicy: IfNotPresent
   hostNetwork: true
 
