@@ -753,17 +753,28 @@ func (m *PodMounter) Unmount(target string) error {
 	podName := mountPodPrefix + volumeID
 	klog.Infof("Deleting mount pod %s (no more references)", podName)
 
-	// Unmount the FUSE source before deleting the pod to avoid a stale mount
-	// window between pod deletion and informer cleanup.
-	if err := fuseUnmount(source); err != nil {
-		klog.V(4).Infof("Unmount FUSE source %s: %v", source, err)
-	}
-
+	// Delete the pod (sends SIGTERM) and let hf-mount handle its own shutdown:
+	// flush dirty files, unmount FUSE, then exit. We no longer call
+	// fuseUnmount(source) before Delete because the combination of
+	// fuseUnmount (triggering destroy/flush) followed immediately by Delete
+	// (sending SIGTERM) causes a deadlock in hf-mount's signal handler,
+	// preventing the flush from completing and silently losing dirty writes.
 	if err := m.client.CoreV1().Pods(m.namespace).Delete(context.TODO(), podName, metav1.DeleteOptions{}); err != nil {
 		if !errors.IsNotFound(err) {
 			klog.Warningf("Failed to delete mount pod %s: %v", podName, err)
 		}
 	}
+
+	// Wait for the pod to terminate so hf-mount has time to flush dirty files
+	// (which may include large xet uploads). Use a generous timeout aligned
+	// with the pod's terminationGracePeriodSeconds (3600s).
+	flushCtx, cancel := context.WithTimeout(context.TODO(), 10*time.Minute)
+	defer cancel()
+	if err := m.waitForPodDeletion(flushCtx, podName); err != nil {
+		klog.Warningf("Timeout waiting for mount pod %s to terminate, force-unmounting: %v", podName, err)
+		_ = fuseUnmount(source)
+	}
+
 	logCRDError("delete", crdName, m.crd.delete(context.TODO(), crdName))
 
 	// Remove the source mount directory.
@@ -1119,27 +1130,24 @@ func (m *PodMounter) waitForMount(path, podName string) error {
 }
 
 func (m *PodMounter) waitForPodDeletion(ctx context.Context, name string) error {
-	deadline := time.After(podDeletionTimeout)
+	// Use the caller's context deadline. If no deadline is set, apply the
+	// default podDeletionTimeout as a fallback.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, podDeletionTimeout)
+		defer cancel()
+	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	var lastErr error
 	for {
 		select {
-		case <-deadline:
-			if lastErr != nil {
-				return fmt.Errorf("timeout waiting for pod %s to be deleted: %w", name, lastErr)
-			}
-			return fmt.Errorf("timeout waiting for pod %s to be deleted", name)
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("timeout waiting for pod %s to be deleted: %w", name, ctx.Err())
 		case <-ticker.C:
 			_, err := m.client.CoreV1().Pods(m.namespace).Get(ctx, name, metav1.GetOptions{})
 			if errors.IsNotFound(err) {
 				return nil
-			}
-			if err != nil {
-				lastErr = err
 			}
 		}
 	}
