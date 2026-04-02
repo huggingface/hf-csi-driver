@@ -63,32 +63,49 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	tokenKey := getWithDefault(volCtx, volumeCtxTokenKey, defaultTokenKey)
 	token := req.GetSecrets()[tokenKey]
 
+	workloadPodUID := volCtx[volumeCtxPodUID]
+	willUseSidecar := d.sidecarMode && workloadPodUID != ""
+
 	// Check existing mount state.
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
 		if mount.IsCorruptedMnt(err) {
-			klog.Warningf("Stale mount detected at %s, cleaning up", target)
-			if umountErr := d.mounter.Unmount(target); umountErr != nil {
-				return nil, status.Errorf(codes.Internal, "failed to clean stale mount at %s: %v", target, umountErr)
+			if willUseSidecar {
+				// In sidecar mode, the kernel FUSE mount intentionally has no
+				// daemon until the sidecar connects. Treat as already mounted
+				// (republish path will check health via error file).
+				mounted = true
+			} else {
+				klog.Warningf("Stale mount detected at %s, force unmounting", target)
+				if umountErr := d.mounter.Unmount(target); umountErr != nil {
+					return nil, status.Errorf(codes.Internal, "failed to clean stale mount at %s: %v", target, umountErr)
+				}
+				mounted = false
 			}
-			mounted = false
 		} else if !os.IsNotExist(err) {
 			return nil, status.Errorf(codes.Internal, "failed to check mount point %s: %v", target, err)
 		}
 	}
 
 	if mounted {
-		// Republish: kubelet calls us with fresh secrets. Update the token file.
+		// Republish: kubelet calls us with fresh secrets.
 		if token != "" {
-			if err := writeTokenFile(tokenFilePath(d.cacheBase, volumeID), token); err != nil {
-				klog.Warningf("Failed to refresh token file for %s: %v", volumeID, err)
+			if willUseSidecar {
+				refreshSidecarToken(workloadPodUID, volumeID, token)
 			} else {
-				klog.V(4).Infof("Refreshed token file for volume %s", volumeID)
+				if err := writeTokenFile(tokenFilePath(d.cacheBase, volumeID), token); err != nil {
+					klog.Warningf("Failed to refresh token file for %s: %v", volumeID, err)
+				}
 			}
 		}
-		// Check mount pod health. If it's in CrashLoopBackOff, return an error
-		// so kubelet emits a FailedMount event visible to the CVO.
-		if err := d.mounter.CheckHealth(target); err != nil {
+		// Check mount health. In sidecar mode, read the error file from the
+		// emptyDir. In podmount mode, check the mount pod container status.
+		// Returning an error makes kubelet emit a FailedMount event on the pod.
+		if willUseSidecar {
+			if err := checkSidecarHealth(workloadPodUID, volumeID); err != nil {
+				return nil, status.Errorf(codes.Internal, "sidecar unhealthy for %s: %v", volumeID, err)
+			}
+		} else if err := d.mounter.CheckHealth(target); err != nil {
 			return nil, status.Errorf(codes.Internal, "mount unhealthy for %s: %v", target, err)
 		}
 		return &csi.NodePublishVolumeResponse{}, nil
@@ -136,8 +153,18 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		}
 	}
 
-	if err := d.mounter.Mount(sourceType, sourceID, target, opts); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to mount %s %s at %s: %v", sourceType, sourceID, target, err)
+	// In sidecar mode, use fd-passing: open /dev/fuse, do the kernel mount,
+	// and hand the fd to the sidecar via a Unix socket. Otherwise, fall back
+	// to the pod-based mounter.
+	if willUseSidecar {
+		klog.Infof("Sidecar mode detected for pod %s, using fd-passing mount", opts.WorkloadPodUID)
+		if err := sidecarMount(sourceType, sourceID, target, opts, volumeID); err != nil {
+			return nil, status.Errorf(codes.Internal, "sidecar mount failed for %s %s at %s: %v", sourceType, sourceID, target, err)
+		}
+	} else {
+		if err := d.mounter.Mount(sourceType, sourceID, target, opts); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to mount %s %s at %s: %v", sourceType, sourceID, target, err)
+		}
 	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
@@ -154,8 +181,9 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Error(codes.InvalidArgument, "targetPath is required")
 	}
 
-	// Always clean up the token file on unpublish, regardless of mount state.
+	// Always clean up the token file and sidecar socket on unpublish.
 	defer d.cleanupTokenFile(volumeID)
+	defer cleanupSidecarSocket(volumeID)
 
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {

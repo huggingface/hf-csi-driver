@@ -27,25 +27,27 @@ type Driver struct {
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
 
-	endpoint  string
-	nodeID    string
-	cacheBase string
-	srv       *grpc.Server
-	mounter   Mounter
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	endpoint    string
+	nodeID      string
+	cacheBase   string
+	sidecarMode bool
+	srv         *grpc.Server
+	mounter     Mounter
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 }
 
-func NewDriver(endpoint, nodeID, cacheBase string, mounter Mounter) *Driver {
+func NewDriver(endpoint, nodeID, cacheBase string, sidecarMode bool, mounter Mounter) *Driver {
 	if cacheBase == "" {
 		cacheBase = DefaultCacheBase
 	}
 	return &Driver{
-		endpoint:  endpoint,
-		nodeID:    nodeID,
-		cacheBase: cacheBase,
-		mounter:   mounter,
-		stopCh:    make(chan struct{}),
+		endpoint:    endpoint,
+		nodeID:      nodeID,
+		cacheBase:   cacheBase,
+		sidecarMode: sidecarMode,
+		mounter:     mounter,
+		stopCh:      make(chan struct{}),
 	}
 }
 

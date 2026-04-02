@@ -51,6 +51,9 @@ spec:
             - --mount-service-account={{ include "hf-csi-driver.fullname" . }}
             - --mount-host-network={{ .Values.hfMount.hostNetwork }}
             - --namespace={{ .Release.Namespace }}
+            {{- if .Values.webhook.enabled }}
+            - --sidecar-mode
+            {{- end }}
             - --v={{ .Values.logVerbosity }}
           env:
             - name: CSI_NODE_NAME

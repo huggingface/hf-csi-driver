@@ -36,6 +36,10 @@ type Mounter interface {
 	Start(stopCh <-chan struct{})
 }
 
+// buildArgs builds the hf-mount-fuse CLI arguments from MountOptions.
+// Used by both podmount (args passed to the mount pod command) and sidecar
+// (args written to a file). The caller sets the right values in opts
+// for each mode (e.g. sidecar clears CacheDir and rewrites TokenFile).
 func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string, error) {
 	switch sourceType {
 	case "bucket", "repo":
@@ -43,31 +47,31 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 		return nil, fmt.Errorf("unsupported sourceType: %q (must be \"bucket\" or \"repo\")", sourceType)
 	}
 
-	var globalArgs []string
+	var args []string
 	if opts.HubEndpoint != "" {
-		globalArgs = append(globalArgs, "--hub-endpoint", opts.HubEndpoint)
+		args = append(args, "--hub-endpoint", opts.HubEndpoint)
 	}
 	if opts.CacheDir != "" {
-		globalArgs = append(globalArgs, "--cache-dir", opts.CacheDir)
+		args = append(args, "--cache-dir", opts.CacheDir)
 	}
 	if opts.CacheSize != "" {
-		globalArgs = append(globalArgs, "--cache-size", opts.CacheSize)
+		args = append(args, "--cache-size", opts.CacheSize)
 	}
 	if opts.PollIntervalSecs != "" {
-		globalArgs = append(globalArgs, "--poll-interval-secs", opts.PollIntervalSecs)
+		args = append(args, "--poll-interval-secs", opts.PollIntervalSecs)
 	}
 	if opts.MetadataTtlMs != "" {
-		globalArgs = append(globalArgs, "--metadata-ttl-ms", opts.MetadataTtlMs)
+		args = append(args, "--metadata-ttl-ms", opts.MetadataTtlMs)
 	}
 	if opts.ReadOnly {
-		globalArgs = append(globalArgs, "--read-only")
+		args = append(args, "--read-only")
 	}
 	if opts.TokenFile != "" {
-		globalArgs = append(globalArgs, "--token-file", opts.TokenFile)
+		args = append(args, "--token-file", opts.TokenFile)
 	}
 
-	globalArgs = append(globalArgs, opts.ExtraArgs...)
-	args := append(globalArgs, sourceType, sourceID, target)
+	args = append(args, opts.ExtraArgs...)
+	args = append(args, sourceType, sourceID, target)
 
 	if sourceType == "repo" && opts.Revision != "" {
 		args = append(args, "--revision", opts.Revision)

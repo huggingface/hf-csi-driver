@@ -1,0 +1,98 @@
+{{- if .Values.webhook.enabled }}
+{{- $svcName := printf "%s-webhook" (include "hf-csi-driver.fullname" .) }}
+{{- $secretName := printf "%s-webhook-tls" (include "hf-csi-driver.fullname" .) }}
+{{- $existingSecret := lookup "v1" "Secret" .Release.Namespace $secretName }}
+{{- if $existingSecret }}
+{{- $caCert := index $existingSecret.data "ca.crt" }}
+{{- $tlsCert := index $existingSecret.data "tls.crt" }}
+{{- $tlsKey := index $existingSecret.data "tls.key" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $tlsCert }}
+  tls.key: {{ $tlsKey }}
+  ca.crt: {{ $caCert }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-sidecar-injector
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+webhooks:
+  - name: sidecar-injector.hf.csi.huggingface.co
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    reinvocationPolicy: Never
+    clientConfig:
+      caBundle: {{ $caCert }}
+      service:
+        name: {{ $svcName }}
+        namespace: {{ .Release.Namespace }}
+        path: /inject
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [kube-system, kube-public, kube-node-lease]
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+{{- else }}
+{{- $cert := genSelfSignedCert $svcName nil (list $svcName (printf "%s.%s" $svcName .Release.Namespace) (printf "%s.%s.svc" $svcName .Release.Namespace)) 3650 }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+  ca.crt: {{ $cert.Cert | b64enc }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-sidecar-injector
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+webhooks:
+  - name: sidecar-injector.hf.csi.huggingface.co
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 10
+    reinvocationPolicy: Never
+    clientConfig:
+      caBundle: {{ $cert.Cert | b64enc }}
+      service:
+        name: {{ $svcName }}
+        namespace: {{ .Release.Namespace }}
+        path: /inject
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [kube-system, kube-public, kube-node-lease]
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+{{- end }}
+{{- end }}
