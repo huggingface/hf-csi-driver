@@ -177,12 +177,18 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	// If the sidecar never connects (timeout), the fd is closed and the
 	// mount becomes stale (ENOTCONN on reads).
 	go func() {
-		defer func() { _ = listener.Close() }()
-		defer func() { _ = os.Remove(symlinkPath) }()
+		defer func() {
+			_ = listener.Close()
+			klog.V(4).Infof("Closed socket listener %s", socketPath)
+		}()
+		defer func() {
+			_ = os.Remove(symlinkPath)
+			klog.V(4).Infof("Removed socket symlink %s", symlinkPath)
+		}()
 
 		_ = listener.(*net.UnixListener).SetDeadline(time.Now().Add(socketAcceptTimeout))
 
-		klog.Infof("Waiting for sidecar to connect on %s", socketPath)
+		klog.Infof("Waiting for sidecar to connect on %s (timeout %v)", socketPath, socketAcceptTimeout)
 		conn, err := listener.Accept()
 		if err != nil {
 			klog.Errorf("Sidecar did not connect within %v: %v", socketAcceptTimeout, err)

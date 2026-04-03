@@ -99,10 +99,14 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 			}
 		}
 		// Check mount health. In sidecar mode, read the error file from the
-		// emptyDir. In podmount mode, check the mount pod container status.
-		// Returning an error makes kubelet emit a FailedMount event on the pod.
+		// emptyDir. If the sidecar failed, unmount the stale FUSE mount so the
+		// next NodePublishVolume call creates a fresh mount + socket for the
+		// restarted sidecar. Return the error so kubelet emits FailedMount.
 		if willUseSidecar {
 			if err := checkSidecarHealth(workloadPodUID, volumeID); err != nil {
+				// Unmount the stale FUSE mount. The next call will re-mount
+				// with a new fd and socket for the restarted sidecar.
+				_ = d.mounter.Unmount(target)
 				return nil, status.Errorf(codes.Internal, "sidecar unhealthy for %s: %v", volumeID, err)
 			}
 		} else if err := d.mounter.CheckHealth(target); err != nil {
