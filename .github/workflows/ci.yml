@@ -86,10 +86,14 @@ jobs:
             --config /tmp/kind-config.yaml
           echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
 
-      - name: Build and load image
+      - name: Build and load images
         run: |
           docker build -t hf-csi-driver:test .
           ./kind load docker-image hf-csi-driver:test --name e2e
+
+          git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e
 
       - name: Install chart
         run: |
@@ -97,7 +101,10 @@ jobs:
             --namespace default \
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
-            --set image.pullPolicy=Never
+            --set image.pullPolicy=Never \
+            --set hfMount.image.repository=hf-mount-fuse \
+            --set hfMount.image.tag=v0.3.0 \
+            --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
 
@@ -463,6 +470,10 @@ jobs:
         env:
           HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
         run: |
+          # Verify token works
+          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+            -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
+
           # Ensure bucket exists on hub-ci (idempotent)
           curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
@@ -560,10 +571,9 @@ jobs:
           docker build -t hf-csi-driver:test .
           ./kind load docker-image hf-csi-driver:test --name e2e-sidecar
 
-          # Build hf-mount-fuse locally (avoids multi-arch manifest issues with Kind load)
-          git clone --depth 1 --branch feat/sidecar-mounter https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:test /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:test --name e2e-sidecar
+          git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e-sidecar
 
       - name: Install chart with webhook
         run: |
@@ -577,7 +587,7 @@ jobs:
             --set webhook.image.tag=test \
             --set webhook.image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=test \
+            --set hfMount.image.tag=v0.3.0 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
@@ -711,6 +721,11 @@ jobs:
           HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
         run: |
           kubectl delete pod test-pv-token --ignore-not-found --wait=false
+
+          # Verify token works
+          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+            -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
+          echo "Token valid for: $(curl -s "https://hub-ci.huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
 
           # Ensure bucket exists on hub-ci (idempotent)
           curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
