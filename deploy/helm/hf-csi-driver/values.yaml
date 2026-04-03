@@ -27,6 +27,15 @@ tolerations:
 
 priorityClassName: system-node-critical
 
+webhook:
+  enabled: false
+  image:
+    repository: ghcr.io/huggingface/hf-csi-driver
+    tag: v0.3.3
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 9443
+
 sidecars:
   nodeDriverRegistrar:
     image: public.ecr.aws/eks-distro/kubernetes-csi/node-driver-registrar:v2.13.0-eks-1-31-12

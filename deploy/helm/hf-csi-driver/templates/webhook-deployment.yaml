@@ -1,0 +1,61 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  replicas: {{ .Values.webhook.replicas }}
+  selector:
+    matchLabels:
+      app: hf-csi-webhook
+  template:
+    metadata:
+      labels:
+        app: hf-csi-webhook
+        {{- include "hf-csi-driver.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "hf-csi-driver.fullname" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: webhook
+          image: "{{ .Values.webhook.image.repository }}:{{ .Values.webhook.image.tag }}"
+          imagePullPolicy: {{ .Values.webhook.image.pullPolicy }}
+          args:
+            - --mode=webhook
+            - --webhook-port={{ .Values.webhook.port }}
+            - --webhook-cert-dir=/etc/tls-certs
+            - --sidecar-image={{ .Values.hfMount.image.repository }}:{{ .Values.hfMount.image.tag }}
+            - --v={{ .Values.logVerbosity }}
+          ports:
+            - containerPort: {{ .Values.webhook.port }}
+              name: https
+              protocol: TCP
+            - containerPort: 22031
+              name: healthz
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/tls-certs
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ include "hf-csi-driver.fullname" . }}-webhook-tls
+{{- end }}
