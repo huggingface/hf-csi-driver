@@ -475,7 +475,7 @@ jobs:
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
 
           # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
+          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           kubectl create secret generic hf-ci-token \
@@ -503,7 +503,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
@@ -550,7 +550,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
@@ -777,7 +777,7 @@ jobs:
           echo "Token valid for: $(curl -s "https://hub-ci.huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
 
           # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
+          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           # Create K8s secret with the HF token
@@ -806,7 +806,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
@@ -853,7 +853,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
