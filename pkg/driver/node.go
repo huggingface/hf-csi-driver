@@ -120,6 +120,11 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return nil, status.Errorf(codes.Internal, "failed to create target directory %s: %v", target, err)
 	}
 
+	// Extract volume mount group (fsGroup) from the CSI request.
+	// Kubelet sends this when the pod has an fsGroup and the driver
+	// advertises VOLUME_MOUNT_GROUP capability.
+	volumeMountGroup := volCap.GetMount().GetVolumeMountGroup()
+
 	// Build mount options.
 	opts := MountOptions{
 		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
@@ -130,6 +135,14 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
 		ReadOnly:         req.GetReadonly(),
 		WorkloadPodUID:   volCtx[volumeCtxPodUID],
+		VolumeMountGroup: volumeMountGroup,
+	}
+
+	// When the pod specifies an fsGroup, pass --uid and --gid to hf-mount-fuse
+	// so files appear owned by the pod's user. This makes volumes writable for
+	// non-root containers (e.g. Docker Spaces with USER 1000).
+	if volumeMountGroup != "" {
+		opts.ExtraArgs = append(opts.ExtraArgs, "--uid="+volumeMountGroup, "--gid="+volumeMountGroup)
 	}
 
 	// If a token is provided, write it to a file for hf-mount to read.
@@ -245,7 +258,17 @@ func (d *Driver) NodeExpandVolume(_ context.Context, _ *csi.NodeExpandVolumeRequ
 }
 
 func (d *Driver) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
-	return &csi.NodeGetCapabilitiesResponse{}, nil
+	return &csi.NodeGetCapabilitiesResponse{
+		Capabilities: []*csi.NodeServiceCapability{
+			{
+				Type: &csi.NodeServiceCapability_Rpc{
+					Rpc: &csi.NodeServiceCapability_RPC{
+						Type: csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP,
+					},
+				},
+			},
+		},
+	}, nil
 }
 
 func (d *Driver) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {

@@ -292,6 +292,96 @@ func TestNodePublishVolume_MountFlagsFromVolumeAttributes(t *testing.T) {
 	}
 }
 
+func TestNodePublishVolume_VolumeMountGroup(t *testing.T) {
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+	target := filepath.Join(t.TempDir(), "target")
+
+	resp, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{
+					VolumeMountGroup: "1000",
+				},
+			},
+		},
+		VolumeContext: map[string]string{
+			"sourceType": "bucket",
+			"sourceId":   "user/my-bucket",
+			"mountFlags": "advanced-writes",
+		},
+		Secrets: map[string]string{"token": "test-token"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if mock.lastOpts.VolumeMountGroup != "1000" {
+		t.Errorf("expected VolumeMountGroup %q, got %q", "1000", mock.lastOpts.VolumeMountGroup)
+	}
+	// --uid and --gid should be prepended before volumeAttributes mount flags.
+	expectedExtra := []string{"--uid=1000", "--gid=1000", "--advanced-writes"}
+	if len(mock.lastOpts.ExtraArgs) != len(expectedExtra) {
+		t.Fatalf("expected ExtraArgs %v, got %v", expectedExtra, mock.lastOpts.ExtraArgs)
+	}
+	for i, a := range mock.lastOpts.ExtraArgs {
+		if a != expectedExtra[i] {
+			t.Errorf("ExtraArgs[%d]: expected %q, got %q", i, expectedExtra[i], a)
+		}
+	}
+}
+
+func TestNodePublishVolume_NoVolumeMountGroup(t *testing.T) {
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+	target := filepath.Join(t.TempDir(), "target")
+
+	_, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
+		},
+		VolumeContext: map[string]string{
+			"sourceType": "bucket",
+			"sourceId":   "user/b",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.lastOpts.VolumeMountGroup != "" {
+		t.Errorf("expected empty VolumeMountGroup, got %q", mock.lastOpts.VolumeMountGroup)
+	}
+	// No --uid/--gid should be added when VolumeMountGroup is empty.
+	if len(mock.lastOpts.ExtraArgs) != 0 {
+		t.Errorf("expected no ExtraArgs, got %v", mock.lastOpts.ExtraArgs)
+	}
+}
+
+func TestNodeGetCapabilities_VolumeMountGroup(t *testing.T) {
+	d := &Driver{}
+	resp, err := d.NodeGetCapabilities(context.Background(), &csi.NodeGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, cap := range resp.GetCapabilities() {
+		if rpc := cap.GetRpc(); rpc != nil && rpc.GetType() == csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected VOLUME_MOUNT_GROUP capability to be advertised")
+	}
+}
+
 func TestNodeUnpublishVolume_MissingFields(t *testing.T) {
 	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
 
