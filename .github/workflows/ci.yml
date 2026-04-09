@@ -95,6 +95,10 @@ jobs:
           docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
           ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e
 
+          # Pre-load busybox to avoid Docker Hub rate limits inside kind.
+          docker pull busybox:latest
+          ./kind load docker-image busybox:latest --name e2e
+
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
@@ -623,6 +627,10 @@ jobs:
           git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
           docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
           ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e-sidecar
+
+          # Pre-load busybox to avoid Docker Hub rate limits inside kind.
+          docker pull busybox:latest
+          ./kind load docker-image busybox:latest --name e2e-sidecar
 
       - name: Install chart with webhook
         run: |
