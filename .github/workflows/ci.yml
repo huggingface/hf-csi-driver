@@ -95,10 +95,6 @@ jobs:
           docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
           ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e
 
-          # Pre-load busybox to avoid Docker Hub rate limits inside kind.
-          docker pull busybox:latest
-          ./kind load docker-image busybox:latest --name e2e
-
       - name: Install chart
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
@@ -163,7 +159,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data && cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -216,7 +212,7 @@ jobs:
           spec:
             containers:
             - name: reader
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "while true; do cat /data/config.json > /dev/null && echo OK; sleep 2; done"]
               volumeMounts:
               - name: vol
@@ -300,7 +296,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -359,7 +355,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data1 && ls /data2 && echo BOTH_OK"]
               volumeMounts:
               - name: vol1
@@ -398,7 +394,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && cat /model/config.json"]
               volumeMounts:
               - name: model
@@ -427,7 +423,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sleep", "300"]
               volumeMounts:
               - name: model
@@ -494,7 +490,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
               volumeMounts:
               - name: bucket
@@ -534,7 +530,7 @@ jobs:
               runAsNonRoot: true
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command:
               - sh
               - -c
@@ -628,10 +624,6 @@ jobs:
           docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
           ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e-sidecar
 
-          # Pre-load busybox to avoid Docker Hub rate limits inside kind.
-          docker pull busybox:latest
-          ./kind load docker-image busybox:latest --name e2e-sidecar
-
       - name: Install chart with webhook
         run: |
           helm install hf-csi deploy/helm/hf-csi-driver/ \
@@ -667,7 +659,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && cat /model/config.json"]
               volumeMounts:
               - name: model
@@ -755,7 +747,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data && cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -801,7 +793,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
               volumeMounts:
               - name: bucket
@@ -841,7 +833,7 @@ jobs:
               runAsNonRoot: true
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command:
               - sh
               - -c
@@ -884,7 +876,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && echo TOKEN_PERMS_OK"]
               volumeMounts:
               - name: vol
@@ -924,7 +916,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "cat /model1/config.json && cat /model2/config.json && echo MULTI_OK"]
               volumeMounts:
               - name: gpt2
