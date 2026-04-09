@@ -511,6 +511,53 @@ jobs:
           kubectl logs test-bucket-rw | grep BUCKET_RW_OK
           echo "SUCCESS: Bucket read-write works with token (podmount)"
 
+      - name: "Bucket write as non-root with fsGroup (podmount)"
+        env:
+          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
+        run: |
+          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
+
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-fsgroup-rw
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              runAsNonRoot: true
+            containers:
+            - name: test
+              image: busybox:latest
+              command:
+              - sh
+              - -c
+              - |
+                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
+                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
+                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
+                cat /mnt/output/fsgroup-test.txt
+              volumeMounts:
+              - name: bucket
+                mountPath: /mnt/output
+            volumes:
+            - name: bucket
+              csi:
+                driver: hf.csi.huggingface.co
+                nodePublishSecretRef:
+                  name: hf-ci-token
+                volumeAttributes:
+                  sourceType: bucket
+                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  hubEndpoint: https://hub-ci.huggingface.co
+            restartPolicy: Never
+          YAML
+          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
+          echo "SUCCESS: Non-root user with fsGroup can write to bucket (podmount)"
+
       - name: Debug on failure
         if: failure()
         run: |
@@ -521,6 +568,8 @@ jobs:
           kubectl describe pod test-resilience 2>/dev/null || true
           echo "=== Bucket RW logs ==="
           kubectl describe pod test-bucket-rw 2>/dev/null || true
+          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw 2>/dev/null || true
           kubectl describe pod test-remount 2>/dev/null || true
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
@@ -765,6 +814,53 @@ jobs:
           kubectl logs test-bucket-rw | grep BUCKET_RW_OK
           echo "SUCCESS: Bucket read-write works with token via sidecar"
 
+      - name: "Bucket write as non-root with fsGroup (sidecar)"
+        env:
+          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
+        run: |
+          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
+
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-fsgroup-rw
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              runAsNonRoot: true
+            containers:
+            - name: test
+              image: busybox:latest
+              command:
+              - sh
+              - -c
+              - |
+                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
+                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
+                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
+                cat /mnt/output/fsgroup-test.txt
+              volumeMounts:
+              - name: bucket
+                mountPath: /mnt/output
+            volumes:
+            - name: bucket
+              csi:
+                driver: hf.csi.huggingface.co
+                nodePublishSecretRef:
+                  name: hf-ci-token
+                volumeAttributes:
+                  sourceType: bucket
+                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  hubEndpoint: https://hub-ci.huggingface.co
+            restartPolicy: Never
+          YAML
+          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
+          echo "SUCCESS: Non-root user with fsGroup can write to bucket (sidecar)"
+
       - name: Token file permissions check
         run: |
           # Verify the token file in the emptyDir is readable by the sidecar (user 65534)
@@ -868,6 +964,10 @@ jobs:
           kubectl logs test-bucket-rw -c hf-mount --previous --tail=100 2>/dev/null || true
           echo "=== Token perms sidecar logs ==="
           kubectl logs test-token-perms -c hf-mount --tail=100 2>/dev/null || true
+          echo "=== fsGroup RW logs ==="
+          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw -c hf-mount --tail=100 2>/dev/null || true
           echo "=== All pods ==="
           kubectl get pods -A
           echo "=== Pod describes ==="
