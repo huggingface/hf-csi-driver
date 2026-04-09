@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -82,8 +83,18 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 
 	// We use syscall.Mount() directly instead of /bin/mount because the
 	// mount.fuse helper is not available in our minimal container image.
+	// When the pod specifies an fsGroup (via VOLUME_MOUNT_GROUP), use it
+	// for the FUSE mount user_id and group_id so the mount point itself
+	// is owned by the pod's user.
+	fuseUID, fuseGID := 0, 0
+	if opts.VolumeMountGroup != "" {
+		if v, err := strconv.Atoi(opts.VolumeMountGroup); err == nil && v > 0 {
+			fuseUID = v
+			fuseGID = v
+		}
+	}
 	flags := uintptr(syscall.MS_NODEV | syscall.MS_NOSUID)
-	mountData := fmt.Sprintf("fd=%d,rootmode=40755,user_id=0,group_id=0,allow_other,default_permissions", fd)
+	mountData := fmt.Sprintf("fd=%d,rootmode=40755,user_id=%d,group_id=%d,allow_other,default_permissions", fd, fuseUID, fuseGID)
 	if err := syscall.Mount("hf-mount", target, "fuse", flags, mountData); err != nil {
 		_ = syscall.Close(fd)
 		return fmt.Errorf("fuse mount on %s: %w", target, err)

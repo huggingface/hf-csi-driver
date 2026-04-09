@@ -159,7 +159,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data && cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -212,7 +212,7 @@ jobs:
           spec:
             containers:
             - name: reader
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "while true; do cat /data/config.json > /dev/null && echo OK; sleep 2; done"]
               volumeMounts:
               - name: vol
@@ -296,7 +296,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -355,7 +355,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data1 && ls /data2 && echo BOTH_OK"]
               volumeMounts:
               - name: vol1
@@ -394,7 +394,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && cat /model/config.json"]
               volumeMounts:
               - name: model
@@ -423,7 +423,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sleep", "300"]
               volumeMounts:
               - name: model
@@ -475,7 +475,7 @@ jobs:
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
 
           # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
+          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           kubectl create secret generic hf-ci-token \
@@ -490,7 +490,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
               volumeMounts:
               - name: bucket
@@ -503,13 +503,60 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
           kubectl logs test-bucket-rw | grep BUCKET_RW_OK
           echo "SUCCESS: Bucket read-write works with token (podmount)"
+
+      - name: "Bucket write as non-root with fsGroup (podmount)"
+        env:
+          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
+        run: |
+          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
+
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-fsgroup-rw
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              runAsNonRoot: true
+            containers:
+            - name: test
+              image: public.ecr.aws/docker/library/busybox:latest
+              command:
+              - sh
+              - -c
+              - |
+                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
+                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
+                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
+                cat /mnt/output/fsgroup-test.txt
+              volumeMounts:
+              - name: bucket
+                mountPath: /mnt/output
+            volumes:
+            - name: bucket
+              csi:
+                driver: hf.csi.huggingface.co
+                nodePublishSecretRef:
+                  name: hf-ci-token
+                volumeAttributes:
+                  sourceType: bucket
+                  sourceId: xcid/csi-e2e-bucket
+                  hubEndpoint: https://hub-ci.huggingface.co
+            restartPolicy: Never
+          YAML
+          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
+          echo "SUCCESS: Non-root user with fsGroup can write to bucket (podmount)"
 
       - name: Debug on failure
         if: failure()
@@ -521,6 +568,8 @@ jobs:
           kubectl describe pod test-resilience 2>/dev/null || true
           echo "=== Bucket RW logs ==="
           kubectl describe pod test-bucket-rw 2>/dev/null || true
+          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw 2>/dev/null || true
           kubectl describe pod test-remount 2>/dev/null || true
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
@@ -610,7 +659,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && cat /model/config.json"]
               volumeMounts:
               - name: model
@@ -698,7 +747,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /data && cat /data/config.json"]
               volumeMounts:
               - name: vol
@@ -728,7 +777,7 @@ jobs:
           echo "Token valid for: $(curl -s "https://hub-ci.huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
 
           # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/e2e-csi-test/csi-e2e-bucket" \
+          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           # Create K8s secret with the HF token
@@ -744,7 +793,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
               volumeMounts:
               - name: bucket
@@ -757,13 +806,60 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: e2e-csi-test/csi-e2e-bucket
+                  sourceId: xcid/csi-e2e-bucket
                   hubEndpoint: https://hub-ci.huggingface.co
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
           kubectl logs test-bucket-rw | grep BUCKET_RW_OK
           echo "SUCCESS: Bucket read-write works with token via sidecar"
+
+      - name: "Bucket write as non-root with fsGroup (sidecar)"
+        env:
+          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
+        run: |
+          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
+
+          kubectl apply -f - <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-fsgroup-rw
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+              runAsNonRoot: true
+            containers:
+            - name: test
+              image: public.ecr.aws/docker/library/busybox:latest
+              command:
+              - sh
+              - -c
+              - |
+                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
+                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
+                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
+                cat /mnt/output/fsgroup-test.txt
+              volumeMounts:
+              - name: bucket
+                mountPath: /mnt/output
+            volumes:
+            - name: bucket
+              csi:
+                driver: hf.csi.huggingface.co
+                nodePublishSecretRef:
+                  name: hf-ci-token
+                volumeAttributes:
+                  sourceType: bucket
+                  sourceId: xcid/csi-e2e-bucket
+                  hubEndpoint: https://hub-ci.huggingface.co
+            restartPolicy: Never
+          YAML
+          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
+          echo "SUCCESS: Non-root user with fsGroup can write to bucket (sidecar)"
 
       - name: Token file permissions check
         run: |
@@ -780,7 +876,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "ls /model && echo TOKEN_PERMS_OK"]
               volumeMounts:
               - name: vol
@@ -820,7 +916,7 @@ jobs:
           spec:
             containers:
             - name: test
-              image: busybox:latest
+              image: public.ecr.aws/docker/library/busybox:latest
               command: ["sh", "-c", "cat /model1/config.json && cat /model2/config.json && echo MULTI_OK"]
               volumeMounts:
               - name: gpt2
@@ -868,6 +964,10 @@ jobs:
           kubectl logs test-bucket-rw -c hf-mount --previous --tail=100 2>/dev/null || true
           echo "=== Token perms sidecar logs ==="
           kubectl logs test-token-perms -c hf-mount --tail=100 2>/dev/null || true
+          echo "=== fsGroup RW logs ==="
+          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw 2>/dev/null || true
+          kubectl logs test-fsgroup-rw -c hf-mount --tail=100 2>/dev/null || true
           echo "=== All pods ==="
           kubectl get pods -A
           echo "=== Pod describes ==="
