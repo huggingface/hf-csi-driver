@@ -92,8 +92,8 @@ jobs:
           ./kind load docker-image hf-csi-driver:test --name e2e
 
           git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e
 
       - name: Install chart
         run: |
@@ -621,8 +621,8 @@ jobs:
           ./kind load docker-image hf-csi-driver:test --name e2e-sidecar
 
           git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e-sidecar
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e-sidecar
 
       - name: Install chart with webhook
         run: |
