@@ -574,6 +574,13 @@ jobs:
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
           kubectl describe pod test-mount-fail 2>/dev/null || true
+          echo "=== Mount pod logs ==="
+          for pod in $(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs "$pod" -c hf-mount --tail=100 2>/dev/null || true
+            echo "--- $pod previous logs ---"
+            kubectl logs "$pod" -c hf-mount --previous --tail=100 2>/dev/null || true
+          done
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
           echo "=== Mount pods ==="
