@@ -471,11 +471,11 @@ jobs:
           HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
         run: |
           # Verify token works
-          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+          curl -sf "https://huggingface.co/api/whoami-v2" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
 
-          # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
+          # Ensure bucket exists (idempotent)
+          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           kubectl create secret generic hf-ci-token \
@@ -503,8 +503,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -550,8 +549,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -779,12 +777,12 @@ jobs:
           kubectl delete pod test-pv-token --ignore-not-found --wait=false
 
           # Verify token works
-          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+          curl -sf "https://huggingface.co/api/whoami-v2" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
-          echo "Token valid for: $(curl -s "https://hub-ci.huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
+          echo "Token valid for: $(curl -s "https://huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
 
-          # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
+          # Ensure bucket exists (idempotent)
+          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           # Create K8s secret with the HF token
@@ -813,8 +811,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -860,8 +857,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
