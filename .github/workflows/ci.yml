@@ -92,8 +92,8 @@ jobs:
           ./kind load docker-image hf-csi-driver:test --name e2e
 
           git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e
 
       - name: Install chart
         run: |
@@ -103,7 +103,7 @@ jobs:
             --set image.tag=test \
             --set image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.0 \
+            --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
@@ -471,11 +471,11 @@ jobs:
           HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
         run: |
           # Verify token works
-          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+          curl -sf "https://huggingface.co/api/whoami-v2" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
 
-          # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
+          # Ensure bucket exists (idempotent)
+          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           kubectl create secret generic hf-ci-token \
@@ -503,8 +503,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -550,8 +549,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -621,8 +619,8 @@ jobs:
           ./kind load docker-image hf-csi-driver:test --name e2e-sidecar
 
           git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.0 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.0 --name e2e-sidecar
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e-sidecar
 
       - name: Install chart with webhook
         run: |
@@ -636,7 +634,7 @@ jobs:
             --set webhook.image.tag=test \
             --set webhook.image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.0 \
+            --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
@@ -772,12 +770,12 @@ jobs:
           kubectl delete pod test-pv-token --ignore-not-found --wait=false
 
           # Verify token works
-          curl -sf "https://hub-ci.huggingface.co/api/whoami-v2" \
+          curl -sf "https://huggingface.co/api/whoami-v2" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
-          echo "Token valid for: $(curl -s "https://hub-ci.huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
+          echo "Token valid for: $(curl -s "https://huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
 
-          # Ensure bucket exists on hub-ci (idempotent)
-          curl -sf -X POST "https://hub-ci.huggingface.co/api/buckets/xcid/csi-e2e-bucket" \
+          # Ensure bucket exists (idempotent)
+          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
             -H "Authorization: Bearer $HUB_CI_TOKEN" || true
 
           # Create K8s secret with the HF token
@@ -806,8 +804,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
@@ -853,8 +850,7 @@ jobs:
                   name: hf-ci-token
                 volumeAttributes:
                   sourceType: bucket
-                  sourceId: xcid/csi-e2e-bucket
-                  hubEndpoint: https://hub-ci.huggingface.co
+                  sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
           YAML
           kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
