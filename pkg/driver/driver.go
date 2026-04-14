@@ -14,6 +14,15 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// sidecarVolumes tracks target paths that were published via sidecar mode.
+// NodeUnpublishVolume checks this to decide whether to use the non-blocking
+// sidecar fast path (fuseUnmount) or the PodMounter path.
+//
+// Entries are added in NodePublishVolume (sidecar branch) and removed in
+// NodeUnpublishVolume. On CSI driver restart the map is empty, so we fall
+// back to checking d.sidecarMode as a heuristic.
+var sidecarVolumes sync.Map // target (string) -> struct{}
+
 const (
 	DriverName = "hf.csi.huggingface.co"
 )

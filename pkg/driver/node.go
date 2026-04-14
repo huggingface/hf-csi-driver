@@ -2,10 +2,12 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -128,9 +130,15 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		// restarted sidecar. Return the error so kubelet emits FailedMount.
 		if willUseSidecar {
 			if err := checkSidecarHealth(workloadPodUID, volumeID); err != nil {
-				// Unmount the stale FUSE mount. The next call will re-mount
-				// with a new fd and socket for the restarted sidecar.
-				_ = d.mounter.Unmount(target)
+				// Unmount the stale FUSE mount directly (non-blocking).
+				// The next NodePublishVolume call will re-mount with a new
+				// fd and socket for the restarted sidecar.
+				if umountErr := fuseUnmount(target); umountErr != nil {
+					klog.V(4).Infof("Sidecar health unmount %s: %v", target, umountErr)
+					// Keep tracking entry so the fast path is used on retry.
+				} else {
+					sidecarVolumes.Delete(target)
+				}
 				return nil, status.Errorf(codes.Internal, "sidecar unhealthy for %s: %v", volumeID, err)
 			}
 		} else if err := d.mounter.CheckHealth(target); err != nil {
@@ -205,6 +213,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		if err := sidecarMount(sourceType, sourceID, target, opts, volumeID); err != nil {
 			return nil, status.Errorf(codes.Internal, "sidecar mount failed for %s %s at %s: %v", sourceType, sourceID, target, err)
 		}
+		sidecarVolumes.Store(target, struct{}{})
 	} else {
 		if err := d.mounter.Mount(sourceType, sourceID, target, opts); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to mount %s %s at %s: %v", sourceType, sourceID, target, err)
@@ -228,6 +237,15 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	// Always clean up the token file and sidecar socket on unpublish.
 	defer d.cleanupTokenFile(volumeID)
 	defer cleanupSidecarSocket(volumeID)
+
+	// Use the sidecar fast path when the volume was published via sidecar.
+	// After a driver restart the in-memory map is empty, so fall back to
+	// the sidecar path only when sidecarMode is on AND PodMounter does not
+	// track this target (which would mean it was published via PodMounter).
+	_, tracked := sidecarVolumes.Load(target)
+	if tracked || (d.sidecarMode && !d.mounter.IsTracked(target)) {
+		return d.unpublishSidecarVolume(target)
+	}
 
 	mounted, err := d.mounter.IsMountPoint(target)
 	if err != nil {
@@ -257,6 +275,35 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 		return nil, status.Errorf(codes.Internal, "failed to unmount %s: %v", target, err)
 	}
 
+	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// unpublishSidecarVolume is the non-blocking fast path for sidecar volumes.
+// It calls fuseUnmount (MNT_DETACH) directly instead of going through
+// PodMounter, which avoids the potentially-blocking IsMountPoint/Lstat call
+// on FUSE mounts with a dead or unstarted daemon.
+//
+// MNT_DETACH is a kernel operation that never touches the FUSE daemon:
+//   - Live FUSE mount: detaches immediately
+//   - Stale mount (ENOTCONN): succeeds
+//   - Not a mount (EINVAL): harmless, ignored
+//   - Path doesn't exist: harmless, ignored
+func (d *Driver) unpublishSidecarVolume(target string) (*csi.NodeUnpublishVolumeResponse, error) {
+	if err := fuseUnmount(target); err != nil {
+		// EINVAL = not a mount, ENOENT = path gone — both are benign.
+		if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOENT) {
+			return nil, status.Errorf(codes.Internal, "sidecar unmount %s: %v", target, err)
+		}
+		klog.V(4).Infof("Sidecar unpublish: unmount %s (benign): %v", target, err)
+	}
+
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "sidecar unpublish: remove %s: %v", target, err)
+	}
+
+	// Delete tracking entry only after successful cleanup, so the fast path
+	// is used on retry if a previous attempt failed.
+	sidecarVolumes.Delete(target)
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 

@@ -11,7 +11,7 @@ import (
 
 // mockMounter implements Mounter for testing.
 type mockMounter struct {
-	mounted map[string]bool
+	mounted  map[string]bool
 	lastOpts MountOptions
 }
 
@@ -40,6 +40,10 @@ func (m *mockMounter) IsMountPoint(target string) (bool, error) {
 
 func (m *mockMounter) CheckHealth(_ string) error {
 	return nil
+}
+
+func (m *mockMounter) IsTracked(target string) bool {
+	return m.mounted[target]
 }
 
 func (m *mockMounter) Recover() error {
@@ -467,5 +471,103 @@ func TestNodeUnpublishVolume_Success(t *testing.T) {
 	}
 	if mock.mounted[target] {
 		t.Error("expected target to be unmounted")
+	}
+}
+
+func TestNodeUnpublishVolume_SidecarTracked(t *testing.T) {
+	// When a volume was published via sidecar (tracked in sidecarVolumes),
+	// NodeUnpublishVolume should use the fast path: fuseUnmount + os.Remove,
+	// without calling PodMounter.IsMountPoint or PodMounter.Unmount.
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir()}
+
+	target := filepath.Join(t.TempDir(), "target")
+	_ = os.MkdirAll(target, 0750)
+
+	// Simulate NodePublishVolume having registered this as a sidecar volume.
+	sidecarVolumes.Store(target, struct{}{})
+	defer sidecarVolumes.Delete(target)
+
+	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	// The tracking entry should be removed.
+	if _, ok := sidecarVolumes.Load(target); ok {
+		t.Error("expected sidecar tracking entry to be removed")
+	}
+	// The target directory should be removed.
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("expected target directory to be removed")
+	}
+}
+
+func TestNodeUnpublishVolume_SidecarModeFallback(t *testing.T) {
+	// When the driver is in sidecar mode but the volume is not tracked
+	// (e.g. after a driver restart), it should still use the fast path.
+	mock := newMockMounter()
+	d := &Driver{mounter: mock, cacheBase: t.TempDir(), sidecarMode: true}
+
+	target := filepath.Join(t.TempDir(), "target")
+	_ = os.MkdirAll(target, 0750)
+
+	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Error("expected target directory to be removed")
+	}
+}
+
+func TestNodeUnpublishVolume_SidecarTargetAlreadyGone(t *testing.T) {
+	// The sidecar fast path should succeed even if the target doesn't exist.
+	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir(), sidecarMode: true}
+
+	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: "/nonexistent/sidecar/target",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+}
+
+func TestSidecarVolumeTracking(t *testing.T) {
+	// Verify that sidecarVolumes entries are cleaned up by unpublish.
+	target := "/test/sidecar/tracking"
+	sidecarVolumes.Store(target, struct{}{})
+	defer sidecarVolumes.Delete(target)
+
+	if _, ok := sidecarVolumes.Load(target); !ok {
+		t.Fatal("expected tracking entry to exist")
+	}
+
+	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
+	// Even without sidecarMode, the tracked entry triggers the fast path.
+	_, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := sidecarVolumes.Load(target); ok {
+		t.Error("expected tracking entry to be removed after unpublish")
 	}
 }
