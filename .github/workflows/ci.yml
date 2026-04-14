@@ -103,7 +103,7 @@ jobs:
             --set image.tag=test \
             --set image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.0 \
+            --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
@@ -636,7 +636,7 @@ jobs:
             --set webhook.image.tag=test \
             --set webhook.image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.0 \
+            --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
