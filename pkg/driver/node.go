@@ -133,7 +133,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 				// Unmount the stale FUSE mount directly (non-blocking).
 				// The next NodePublishVolume call will re-mount with a new
 				// fd and socket for the restarted sidecar.
-				if umountErr := fuseUnmount(target); umountErr != nil {
+				if umountErr := d.fuseUnmountFn(target); umountErr != nil {
 					klog.V(4).Infof("Sidecar health unmount %s: %v", target, umountErr)
 					// Keep tracking entry so the fast path is used on retry.
 				} else {
@@ -239,18 +239,12 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	defer cleanupSidecarSocket(volumeID)
 
 	// Use the sidecar fast path when the volume was published via sidecar.
-	// After a driver restart the in-memory map is empty, so fall back to
-	// the sidecar path only when sidecarMode is on AND PodMounter does not
-	// track this target (which would mean it was published via PodMounter).
-	//
-	// INVARIANT: sidecarMode is all-or-nothing per node. When sidecarMode
-	// is true, ALL volumes on this node are sidecar-published (no PodMounter
-	// volumes coexist). The fallback heuristic relies on this: if mixed
-	// PodMounter + sidecar volumes are ever needed on the same node, the
-	// heuristic must be replaced with a durable per-target mode marker
-	// (e.g. a file or annotation) to survive driver restarts safely.
-	_, tracked := sidecarVolumes.Load(target)
-	if tracked || (d.sidecarMode && !d.mounter.IsTracked(target)) {
+	// Tracking is in-memory only: after a driver restart the map is empty
+	// and sidecar-published volumes fall through to the PodMounter path,
+	// which may block on a stale FUSE mount until kubelet times out and
+	// the driver pod is restarted again. Acceptable for a recovery-only
+	// edge case; promote to a persisted marker if it becomes a problem.
+	if _, tracked := sidecarVolumes.Load(target); tracked {
 		return d.unpublishSidecarVolume(target)
 	}
 
@@ -296,7 +290,7 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 //   - Not a mount (EINVAL): harmless, ignored
 //   - Path doesn't exist: harmless, ignored
 func (d *Driver) unpublishSidecarVolume(target string) (*csi.NodeUnpublishVolumeResponse, error) {
-	if err := fuseUnmount(target); err != nil {
+	if err := d.fuseUnmountFn(target); err != nil {
 		// EINVAL = not a mount, ENOENT = path gone — both are benign.
 		if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOENT) {
 			return nil, status.Errorf(codes.Internal, "sidecar unmount %s: %v", target, err)
