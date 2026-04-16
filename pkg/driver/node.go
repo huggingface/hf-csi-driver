@@ -242,6 +242,13 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	// After a driver restart the in-memory map is empty, so fall back to
 	// the sidecar path only when sidecarMode is on AND PodMounter does not
 	// track this target (which would mean it was published via PodMounter).
+	//
+	// INVARIANT: sidecarMode is all-or-nothing per node. When sidecarMode
+	// is true, ALL volumes on this node are sidecar-published (no PodMounter
+	// volumes coexist). The fallback heuristic relies on this: if mixed
+	// PodMounter + sidecar volumes are ever needed on the same node, the
+	// heuristic must be replaced with a durable per-target mode marker
+	// (e.g. a file or annotation) to survive driver restarts safely.
 	_, tracked := sidecarVolumes.Load(target)
 	if tracked || (d.sidecarMode && !d.mounter.IsTracked(target)) {
 		return d.unpublishSidecarVolume(target)
