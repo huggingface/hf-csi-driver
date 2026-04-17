@@ -199,6 +199,8 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `cacheSize` | no | `10000000000` | Max cache size in bytes |
 | `pollIntervalSecs` | no | `30` | Remote change polling interval |
 | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
+| `inodeSoftLimit` | no | `0` | Soft cap on in-memory inode table size (0 disables). When exceeded, `hf-mount` evicts the oldest untouched entries before inserting new ones, putting backpressure on the workload instead of letting the sidecar OOM. |
+| `lruSweepIntervalMs` | no | `5000` | Interval between background LRU sweeps that ask the kernel to drop dentries whose inode still has positive refcount. Only consulted when `inodeSoftLimit > 0`. |
 | `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
 | `mountFlags` | no | | Comma-separated hf-mount flags for inline ephemeral volumes (e.g. `advanced-writes,uid=1000`) |
 | `memoryLimit` | no | | Memory limit for the injected `hf-mount` sidecar (e.g. `2Gi`). Requires the admission webhook. |

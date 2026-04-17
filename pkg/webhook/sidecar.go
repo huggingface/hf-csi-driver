@@ -9,10 +9,6 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// Built-in defaults for the hf-mount sidecar. Users override these per pod
-// via volumeAttributes (see buildSidecarResources). Limits are intentionally
-// left unset by default to preserve historical behaviour — callers that hit
-// memory pressure should opt into a limit via memoryLimit.
 var (
 	defaultSidecarCPURequest    = resource.MustParse("10m")
 	defaultSidecarMemoryRequest = resource.MustParse("32Mi")
