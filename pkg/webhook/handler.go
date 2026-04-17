@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -35,42 +36,65 @@ const (
 	volumeAttrCPURequest    = "cpuRequest"
 )
 
-// sidecarResources holds the raw quantity strings read from volumeAttributes
-// that will be applied to the injected hf-mount sidecar container.
-// Empty fields mean "leave the built-in default unchanged".
+// sidecarResources holds the already-parsed quantities collected from
+// volumeAttributes to apply to the injected hf-mount sidecar container.
+// A nil field means "no user override for this field".
 type sidecarResources struct {
-	MemoryLimit   string
-	MemoryRequest string
-	CPULimit      string
-	CPURequest    string
+	MemoryLimit   *resource.Quantity
+	MemoryRequest *resource.Quantity
+	CPULimit      *resource.Quantity
+	CPURequest    *resource.Quantity
 }
 
-// merge keeps the first non-empty value per field (volumes earlier in
-// pod.Spec.Volumes win). The sidecar is a single container shared by all
-// HF CSI volumes in the pod, so we cannot honour conflicting per-volume
-// hints — document this and pick a deterministic winner.
-func (r *sidecarResources) merge(other sidecarResources) {
-	if r.MemoryLimit == "" {
-		r.MemoryLimit = other.MemoryLimit
-	}
-	if r.MemoryRequest == "" {
-		r.MemoryRequest = other.MemoryRequest
-	}
-	if r.CPULimit == "" {
-		r.CPULimit = other.CPULimit
-	}
-	if r.CPURequest == "" {
-		r.CPURequest = other.CPURequest
+// mergeMax combines another per-volume hint into r by taking, per field, the
+// larger of the two quantities. The sidecar is a single container shared by
+// every HF CSI volume in the pod, so conflicting per-volume hints cannot
+// both be honoured; picking the max is order-independent and biases toward
+// the most generous hint, which is safe for a shared FUSE process.
+func (r *sidecarResources) mergeMax(other sidecarResources) {
+	r.MemoryLimit = maxQuantity(r.MemoryLimit, other.MemoryLimit)
+	r.MemoryRequest = maxQuantity(r.MemoryRequest, other.MemoryRequest)
+	r.CPULimit = maxQuantity(r.CPULimit, other.CPULimit)
+	r.CPURequest = maxQuantity(r.CPURequest, other.CPURequest)
+}
+
+// maxQuantity returns the larger of a and b, treating nil as "not set".
+func maxQuantity(a, b *resource.Quantity) *resource.Quantity {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case a.Cmp(*b) < 0:
+		return b
+	default:
+		return a
 	}
 }
 
+// resourcesFromVolumeAttrs parses each resource field from volumeAttributes
+// up front. Invalid quantity strings are dropped (with a klog warning) and
+// treated as "not set" — this guarantees that an invalid early-volume hint
+// cannot shadow a valid later-volume hint in mergeMax.
 func resourcesFromVolumeAttrs(attrs map[string]string) sidecarResources {
 	return sidecarResources{
-		MemoryLimit:   attrs[volumeAttrMemoryLimit],
-		MemoryRequest: attrs[volumeAttrMemoryRequest],
-		CPULimit:      attrs[volumeAttrCPULimit],
-		CPURequest:    attrs[volumeAttrCPURequest],
+		MemoryLimit:   parseQuantityAttr(volumeAttrMemoryLimit, attrs[volumeAttrMemoryLimit]),
+		MemoryRequest: parseQuantityAttr(volumeAttrMemoryRequest, attrs[volumeAttrMemoryRequest]),
+		CPULimit:      parseQuantityAttr(volumeAttrCPULimit, attrs[volumeAttrCPULimit]),
+		CPURequest:    parseQuantityAttr(volumeAttrCPURequest, attrs[volumeAttrCPURequest]),
 	}
+}
+
+func parseQuantityAttr(field, raw string) *resource.Quantity {
+	if raw == "" {
+		return nil
+	}
+	q, err := resource.ParseQuantity(raw)
+	if err != nil {
+		klog.Warningf("Webhook: ignoring invalid %s=%q in volumeAttributes: %v", field, raw, err)
+		return nil
+	}
+	return &q
 }
 
 // Config holds the webhook configuration.
@@ -139,11 +163,11 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 		switch {
 		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
 			count++
-			resources.merge(resourcesFromVolumeAttrs(vol.CSI.VolumeAttributes))
+			resources.mergeMax(resourcesFromVolumeAttrs(vol.CSI.VolumeAttributes))
 		case vol.PersistentVolumeClaim != nil:
 			if pv := i.resolvePVFromPVC(ctx, vol.PersistentVolumeClaim.ClaimName, namespace); pv != nil {
 				count++
-				resources.merge(resourcesFromVolumeAttrs(pv.Spec.CSI.VolumeAttributes))
+				resources.mergeMax(resourcesFromVolumeAttrs(pv.Spec.CSI.VolumeAttributes))
 			}
 		}
 	}

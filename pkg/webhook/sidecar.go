@@ -19,9 +19,11 @@ var (
 )
 
 // buildSidecarResources produces the ResourceRequirements for the injected
-// hf-mount container, applying user overrides on top of the built-in
-// defaults. Unparseable quantity strings are skipped (with a log line) so a
-// typo in volumeAttributes never prevents a pod from starting.
+// hf-mount container, applying the already-parsed user overrides on top of
+// the built-in defaults. If a user override results in request > limit for a
+// given resource (e.g. default 32Mi request + memoryLimit: 16Mi), the
+// request is clamped down to the limit so the apiserver never rejects the
+// pod because of a conflicting per-volume hint.
 func buildSidecarResources(overrides sidecarResources) corev1.ResourceRequirements {
 	req := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -30,37 +32,50 @@ func buildSidecarResources(overrides sidecarResources) corev1.ResourceRequiremen
 		},
 	}
 
-	if q, ok := parseQuantity("cpuRequest", overrides.CPURequest); ok {
-		req.Requests[corev1.ResourceCPU] = q
+	if overrides.CPURequest != nil {
+		req.Requests[corev1.ResourceCPU] = *overrides.CPURequest
 	}
-	if q, ok := parseQuantity("memoryRequest", overrides.MemoryRequest); ok {
-		req.Requests[corev1.ResourceMemory] = q
+	if overrides.MemoryRequest != nil {
+		req.Requests[corev1.ResourceMemory] = *overrides.MemoryRequest
 	}
-	if q, ok := parseQuantity("cpuLimit", overrides.CPULimit); ok {
+	if overrides.CPULimit != nil {
 		if req.Limits == nil {
 			req.Limits = corev1.ResourceList{}
 		}
-		req.Limits[corev1.ResourceCPU] = q
+		req.Limits[corev1.ResourceCPU] = *overrides.CPULimit
 	}
-	if q, ok := parseQuantity("memoryLimit", overrides.MemoryLimit); ok {
+	if overrides.MemoryLimit != nil {
 		if req.Limits == nil {
 			req.Limits = corev1.ResourceList{}
 		}
-		req.Limits[corev1.ResourceMemory] = q
+		req.Limits[corev1.ResourceMemory] = *overrides.MemoryLimit
 	}
+
+	clampRequestToLimit(&req, corev1.ResourceCPU)
+	clampRequestToLimit(&req, corev1.ResourceMemory)
+
 	return req
 }
 
-func parseQuantity(field, raw string) (resource.Quantity, bool) {
-	if raw == "" {
-		return resource.Quantity{}, false
+// clampRequestToLimit ensures req.Requests[name] <= req.Limits[name].
+// Violations are clamped (not rejected) so a typo or an accidentally-small
+// limit in volumeAttributes never blocks pod admission.
+func clampRequestToLimit(req *corev1.ResourceRequirements, name corev1.ResourceName) {
+	if req.Limits == nil {
+		return
 	}
-	q, err := resource.ParseQuantity(raw)
-	if err != nil {
-		klog.Warningf("Webhook: ignoring invalid %s=%q in volumeAttributes: %v", field, raw, err)
-		return resource.Quantity{}, false
+	lim, hasLim := req.Limits[name]
+	if !hasLim {
+		return
 	}
-	return q, true
+	rq, hasRq := req.Requests[name]
+	if !hasRq {
+		return
+	}
+	if rq.Cmp(lim) > 0 {
+		klog.Warningf("Webhook: %s request %s exceeds limit %s; clamping request to limit", name, rq.String(), lim.String())
+		req.Requests[name] = lim
+	}
 }
 
 // injectSidecar adds the hf-mount native sidecar container and the shared
