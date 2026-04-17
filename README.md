@@ -201,6 +201,37 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
 | `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
 | `mountFlags` | no | | Comma-separated hf-mount flags for inline ephemeral volumes (e.g. `advanced-writes,uid=1000`) |
+| `memoryLimit` | no | | Memory limit for the injected `hf-mount` sidecar (e.g. `2Gi`). Requires the admission webhook. |
+| `memoryRequest` | no | `32Mi` | Memory request for the injected `hf-mount` sidecar (e.g. `128Mi`). Requires the admission webhook. |
+| `cpuLimit` | no | | CPU limit for the injected `hf-mount` sidecar (e.g. `1`, `500m`). Requires the admission webhook. |
+| `cpuRequest` | no | `10m` | CPU request for the injected `hf-mount` sidecar (e.g. `100m`). Requires the admission webhook. |
+
+### Sidecar resources
+
+When the admission webhook is enabled, the `hf-mount` FUSE sidecar is injected
+into every pod using an HF CSI volume. By default it ships with modest
+requests (`cpu: 10m`, `memory: 32Mi`) and **no limits**, which can let the
+cache grow unbounded and trigger node memory pressure under heavy traffic. Use
+the `memoryLimit` / `memoryRequest` / `cpuLimit` / `cpuRequest`
+`volumeAttributes` to cap it — values are standard Kubernetes quantity strings
+(e.g. `"2Gi"`, `"500m"`).
+
+```yaml
+volumes:
+  - name: hf-data
+    csi:
+      driver: hf.csi.huggingface.co
+      volumeAttributes:
+        sourceType: bucket
+        sourceId: username/my-bucket
+        memoryLimit: 2Gi
+        memoryRequest: 256Mi
+```
+
+The sidecar is a single container shared across every HF CSI volume in the
+pod. If multiple volumes set the same resource attribute with different
+values, the first volume (in `pod.spec.volumes` order) wins; invalid quantity
+strings are logged and ignored so a typo never blocks pod admission.
 
 ## Mount options
 

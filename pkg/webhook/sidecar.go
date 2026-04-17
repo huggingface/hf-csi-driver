@@ -5,14 +5,73 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 )
+
+// Built-in defaults for the hf-mount sidecar. Users override these per pod
+// via volumeAttributes (see buildSidecarResources). Limits are intentionally
+// left unset by default to preserve historical behaviour — callers that hit
+// memory pressure should opt into a limit via memoryLimit.
+var (
+	defaultSidecarCPURequest    = resource.MustParse("10m")
+	defaultSidecarMemoryRequest = resource.MustParse("32Mi")
+)
+
+// buildSidecarResources produces the ResourceRequirements for the injected
+// hf-mount container, applying user overrides on top of the built-in
+// defaults. Unparseable quantity strings are skipped (with a log line) so a
+// typo in volumeAttributes never prevents a pod from starting.
+func buildSidecarResources(overrides sidecarResources) corev1.ResourceRequirements {
+	req := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    defaultSidecarCPURequest,
+			corev1.ResourceMemory: defaultSidecarMemoryRequest,
+		},
+	}
+
+	if q, ok := parseQuantity("cpuRequest", overrides.CPURequest); ok {
+		req.Requests[corev1.ResourceCPU] = q
+	}
+	if q, ok := parseQuantity("memoryRequest", overrides.MemoryRequest); ok {
+		req.Requests[corev1.ResourceMemory] = q
+	}
+	if q, ok := parseQuantity("cpuLimit", overrides.CPULimit); ok {
+		if req.Limits == nil {
+			req.Limits = corev1.ResourceList{}
+		}
+		req.Limits[corev1.ResourceCPU] = q
+	}
+	if q, ok := parseQuantity("memoryLimit", overrides.MemoryLimit); ok {
+		if req.Limits == nil {
+			req.Limits = corev1.ResourceList{}
+		}
+		req.Limits[corev1.ResourceMemory] = q
+	}
+	return req
+}
+
+func parseQuantity(field, raw string) (resource.Quantity, bool) {
+	if raw == "" {
+		return resource.Quantity{}, false
+	}
+	q, err := resource.ParseQuantity(raw)
+	if err != nil {
+		klog.Warningf("Webhook: ignoring invalid %s=%q in volumeAttributes: %v", field, raw, err)
+		return resource.Quantity{}, false
+	}
+	return q, true
+}
 
 // injectSidecar adds the hf-mount native sidecar container and the shared
 // emptyDir volume to the pod spec. The sidecar runs unprivileged: it receives
 // the FUSE fd from the CSI driver via SCM_RIGHTS (the CSI driver does the
 // kernel mount).
-func injectSidecar(pod *corev1.Pod, config Config, volumeCount int) {
+//
+// resources carries optional per-pod resource overrides collected from
+// volumeAttributes. Invalid quantity strings are logged and dropped so a
+// typo never blocks pod admission.
+func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources sidecarResources) {
 	// Add the shared emptyDir volume for config + socket communication.
 	// Use tmpfs (Memory) because the args file may contain the HF token.
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
@@ -72,12 +131,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int) {
 			PeriodSeconds:    1,
 			FailureThreshold: 120,
 		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("10m"),
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-			},
-		},
+		Resources: buildSidecarResources(resources),
 	}
 
 	// Prepend as init container (native sidecar, KEP-753).

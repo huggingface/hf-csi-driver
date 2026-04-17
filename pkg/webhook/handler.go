@@ -25,7 +25,53 @@ const (
 
 	// TmpVolumeMountPath is the mount path of the tmp volume inside the sidecar.
 	TmpVolumeMountPath = "/hf-csi-tmp"
+
+	// volumeAttribute keys recognised by the injector to configure the
+	// resource requests/limits of the injected hf-mount sidecar. Values are
+	// standard Kubernetes quantity strings (e.g. "2Gi", "500m").
+	volumeAttrMemoryLimit   = "memoryLimit"
+	volumeAttrMemoryRequest = "memoryRequest"
+	volumeAttrCPULimit      = "cpuLimit"
+	volumeAttrCPURequest    = "cpuRequest"
 )
+
+// sidecarResources holds the raw quantity strings read from volumeAttributes
+// that will be applied to the injected hf-mount sidecar container.
+// Empty fields mean "leave the built-in default unchanged".
+type sidecarResources struct {
+	MemoryLimit   string
+	MemoryRequest string
+	CPULimit      string
+	CPURequest    string
+}
+
+// merge keeps the first non-empty value per field (volumes earlier in
+// pod.Spec.Volumes win). The sidecar is a single container shared by all
+// HF CSI volumes in the pod, so we cannot honour conflicting per-volume
+// hints — document this and pick a deterministic winner.
+func (r *sidecarResources) merge(other sidecarResources) {
+	if r.MemoryLimit == "" {
+		r.MemoryLimit = other.MemoryLimit
+	}
+	if r.MemoryRequest == "" {
+		r.MemoryRequest = other.MemoryRequest
+	}
+	if r.CPULimit == "" {
+		r.CPULimit = other.CPULimit
+	}
+	if r.CPURequest == "" {
+		r.CPURequest = other.CPURequest
+	}
+}
+
+func resourcesFromVolumeAttrs(attrs map[string]string) sidecarResources {
+	return sidecarResources{
+		MemoryLimit:   attrs[volumeAttrMemoryLimit],
+		MemoryRequest: attrs[volumeAttrMemoryRequest],
+		CPULimit:      attrs[volumeAttrCPULimit],
+		CPURequest:    attrs[volumeAttrCPURequest],
+	}
+}
 
 // Config holds the webhook configuration.
 type Config struct {
@@ -58,8 +104,9 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 		return admission.Allowed("not a create")
 	}
 
-	// Count HF CSI volumes (inline or PV-backed).
-	volumeCount := i.countHFCSIVolumes(ctx, pod, req.Namespace)
+	// Count HF CSI volumes (inline or PV-backed) and collect resource hints
+	// from their volumeAttributes.
+	volumeCount, resources := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
 	if volumeCount == 0 {
 		return admission.Allowed("no HF CSI volumes")
 	}
@@ -72,7 +119,7 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 	klog.Infof("Injecting sidecar into pod %s/%s", req.Namespace, pod.GenerateName)
 
 	// Inject the sidecar container and shared volume.
-	injectSidecar(pod, i.Config, volumeCount)
+	injectSidecar(pod, i.Config, volumeCount, resources)
 
 	marshaledPod, err := json.Marshal(pod)
 	if err != nil {
@@ -82,39 +129,48 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaledPod)
 }
 
-// countHFCSIVolumes returns the number of HF CSI volumes in the pod,
-// including both inline ephemeral and PV-backed via PVC.
-func (i *Injector) countHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) int {
+// scanHFCSIVolumes returns the number of HF CSI volumes in the pod
+// (inline ephemeral or PV-backed via PVC) and the merged sidecar resource
+// hints collected from their volumeAttributes.
+func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, sidecarResources) {
 	count := 0
+	var resources sidecarResources
 	for _, vol := range pod.Spec.Volumes {
-		if vol.CSI != nil && vol.CSI.Driver == CSIDriverName {
+		switch {
+		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
 			count++
-		} else if vol.PersistentVolumeClaim != nil {
-			if i.isPVCBackedByHFCSI(ctx, vol.PersistentVolumeClaim.ClaimName, namespace) {
+			resources.merge(resourcesFromVolumeAttrs(vol.CSI.VolumeAttributes))
+		case vol.PersistentVolumeClaim != nil:
+			if pv := i.resolvePVFromPVC(ctx, vol.PersistentVolumeClaim.ClaimName, namespace); pv != nil {
 				count++
+				resources.merge(resourcesFromVolumeAttrs(pv.Spec.CSI.VolumeAttributes))
 			}
 		}
 	}
-	return count
+	return count, resources
 }
 
-// isPVCBackedByHFCSI resolves a PVC to its PV and checks if the PV uses the HF CSI driver.
-func (i *Injector) isPVCBackedByHFCSI(ctx context.Context, pvcName, namespace string) bool {
+// resolvePVFromPVC returns the PV backing the given PVC if (and only if) it
+// uses the HF CSI driver, otherwise nil.
+func (i *Injector) resolvePVFromPVC(ctx context.Context, pvcName, namespace string) *corev1.PersistentVolume {
 	pvc := &corev1.PersistentVolumeClaim{}
 	if err := i.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pvcName}, pvc); err != nil {
 		klog.V(4).Infof("Webhook: cannot resolve PVC %s/%s: %v", namespace, pvcName, err)
-		return false
+		return nil
 	}
 	pvName := pvc.Spec.VolumeName
 	if pvName == "" {
-		return false
+		return nil
 	}
 	pv := &corev1.PersistentVolume{}
 	if err := i.client.Get(ctx, client.ObjectKey{Name: pvName}, pv); err != nil {
 		klog.V(4).Infof("Webhook: cannot resolve PV %s: %v", pvName, err)
-		return false
+		return nil
 	}
-	return pv.Spec.CSI != nil && pv.Spec.CSI.Driver == CSIDriverName
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != CSIDriverName {
+		return nil
+	}
+	return pv
 }
 
 // hasSidecar returns true if the sidecar is already injected.
