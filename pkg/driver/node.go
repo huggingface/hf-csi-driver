@@ -18,17 +18,19 @@ const (
 	defaultRevision = "main"
 	defaultTokenKey = "token"
 
-	volumeCtxSourceType   = "sourceType"
-	volumeCtxSourceID     = "sourceId"
-	volumeCtxRevision     = "revision"
-	volumeCtxHubEndpoint  = "hubEndpoint"
-	volumeCtxCacheDir     = "cacheDir"
-	volumeCtxCacheSize    = "cacheSize"
-	volumeCtxPollInterval = "pollIntervalSecs"
-	volumeCtxMetadataTtl  = "metadataTtlMs"
-	volumeCtxTokenKey     = "tokenKey"
-	volumeCtxMountFlags   = "mountFlags"
-	volumeCtxPodUID       = "csi.storage.k8s.io/pod.uid"
+	volumeCtxSourceType         = "sourceType"
+	volumeCtxSourceID           = "sourceId"
+	volumeCtxRevision           = "revision"
+	volumeCtxHubEndpoint        = "hubEndpoint"
+	volumeCtxCacheDir           = "cacheDir"
+	volumeCtxCacheSize          = "cacheSize"
+	volumeCtxPollInterval       = "pollIntervalSecs"
+	volumeCtxMetadataTtl        = "metadataTtlMs"
+	volumeCtxInodeSoftLimit     = "inodeSoftLimit"
+	volumeCtxLruSweepIntervalMs = "lruSweepIntervalMs"
+	volumeCtxTokenKey           = "tokenKey"
+	volumeCtxMountFlags         = "mountFlags"
+	volumeCtxPodUID             = "csi.storage.k8s.io/pod.uid"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -127,15 +129,17 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 
 	// Build mount options.
 	opts := MountOptions{
-		Revision:         getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
-		HubEndpoint:      volCtx[volumeCtxHubEndpoint],
-		CacheDir:         getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
-		CacheSize:        volCtx[volumeCtxCacheSize],
-		PollIntervalSecs: volCtx[volumeCtxPollInterval],
-		MetadataTtlMs:    volCtx[volumeCtxMetadataTtl],
-		ReadOnly:         req.GetReadonly(),
-		WorkloadPodUID:   volCtx[volumeCtxPodUID],
-		VolumeMountGroup: volumeMountGroup,
+		Revision:           getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
+		HubEndpoint:        volCtx[volumeCtxHubEndpoint],
+		CacheDir:           getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
+		CacheSize:          volCtx[volumeCtxCacheSize],
+		PollIntervalSecs:   volCtx[volumeCtxPollInterval],
+		MetadataTtlMs:      volCtx[volumeCtxMetadataTtl],
+		InodeSoftLimit:     volCtx[volumeCtxInodeSoftLimit],
+		LruSweepIntervalMs: volCtx[volumeCtxLruSweepIntervalMs],
+		ReadOnly:           req.GetReadonly(),
+		WorkloadPodUID:     volCtx[volumeCtxPodUID],
+		VolumeMountGroup:   volumeMountGroup,
 	}
 
 	// When the pod specifies an fsGroup, pass --uid and --gid to hf-mount-fuse
