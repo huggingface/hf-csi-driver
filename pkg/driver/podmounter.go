@@ -572,6 +572,11 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 	sourceType, _ := spec["sourceType"].(string)
 	sourceID, _ := spec["sourceID"].(string)
 
+	var resources MountResources
+	if rawRes, ok := spec["resources"].(map[string]interface{}); ok {
+		resources = MountResourcesFromUnstructured(rawRes)
+	}
+
 	klog.Infof("tryHealSource: recreating mount pod %s from CRD %s", podName, crdName)
 
 	// Delete the stale pod if it still exists.
@@ -583,9 +588,7 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 		}
 	}
 
-	// TODO: persist Resources in the HFMount CRD so heal preserves user
-	// overrides. For now heal falls back to defaults.
-	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, MountResources{})
+	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, resources)
 	if _, createErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, newPod, metav1.CreateOptions{}); createErr != nil {
 		klog.Warningf("tryHealSource: failed to recreate pod %s: %v", podName, createErr)
 		return
@@ -678,7 +681,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	// Create HFMount CRD. This is the source of truth for mount args, required
 	// for pod recreation on failure. Mount must fail if CRD cannot be persisted.
 	crdName := hfMountName(volumeID)
-	if crdErr := m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args); crdErr != nil {
+	if crdErr := m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args, opts.Resources); crdErr != nil {
 		if !errors.IsAlreadyExists(crdErr) {
 			return fmt.Errorf("failed to create HFMount CRD %s: %w", crdName, crdErr)
 		}
