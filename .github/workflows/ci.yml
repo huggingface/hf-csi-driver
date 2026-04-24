@@ -563,10 +563,13 @@ jobs:
           metadata:
             name: test-resources
           spec:
+            # Long-running: the test asserts against the still-attached mount
+            # pod, so the workload must outlive the label query (otherwise
+            # NodeUnpublish + mount-pod cleanup races with kubectl).
             containers:
             - name: test
               image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "cat /data/config.json && echo RESOURCES_OK"]
+              command: ["sh", "-c", "cat /data/config.json && echo RESOURCES_OK && sleep 600"]
               volumeMounts:
               - name: vol
                 mountPath: /data
@@ -577,7 +580,12 @@ jobs:
                 claimName: test-pvc-resources
             restartPolicy: Never
           EOF
-          kubectl wait pod/test-resources --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl wait pod/test-resources --for=condition=Ready --timeout=180s
+          # Wait for the busybox command to have printed RESOURCES_OK.
+          for _ in $(seq 1 30); do
+            kubectl logs test-resources 2>/dev/null | grep -q RESOURCES_OK && break
+            sleep 1
+          done
           kubectl logs test-resources | grep RESOURCES_OK
 
           # Verify the mount pod received the user-specified resources.
