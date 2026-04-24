@@ -162,6 +162,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		ReadOnly:           req.GetReadonly(),
 		WorkloadPodUID:     volCtx[volumeCtxPodUID],
 		VolumeMountGroup:   volumeMountGroup,
+		Resources:          ParseMountResources(volCtx),
 	}
 
 	// When the pod specifies an fsGroup, pass --uid and --gid to hf-mount-fuse

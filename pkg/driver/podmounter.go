@@ -584,7 +584,9 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 		}
 	}
 
-	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
+	// TODO: persist Resources in the HFMount CRD so heal preserves user
+	// overrides. For now heal falls back to defaults.
+	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, MountResources{})
 	if _, createErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, newPod, metav1.CreateOptions{}); createErr != nil {
 		klog.Warningf("tryHealSource: failed to recreate pod %s: %v", podName, createErr)
 		return
@@ -700,7 +702,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		}
 	}()
 
-	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
+	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, opts.Resources)
 	klog.Infof("Creating mount pod %s for %s %s", podName, sourceType, sourceID)
 	if _, err := m.client.CoreV1().Pods(m.namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		if errors.IsAlreadyExists(err) {
@@ -1035,7 +1037,12 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	go m.rebindTargets(mountPath)
 }
 
-func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string) *corev1.Pod {
+var (
+	defaultMountPodCPURequest    = resource.MustParse("10m")
+	defaultMountPodMemoryRequest = resource.MustParse("32Mi")
+)
+
+func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string, resources MountResources) *corev1.Pod {
 	bidirectional := corev1.MountPropagationBidirectional
 
 	return &corev1.Pod{
@@ -1102,12 +1109,7 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 						MountPath: m.cacheDir,
 					},
 				},
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("10m"),
-						corev1.ResourceMemory: resource.MustParse("32Mi"),
-					},
-				},
+				Resources: BuildResourceRequirements(resources, defaultMountPodCPURequest, defaultMountPodMemoryRequest),
 			}},
 			Volumes: []corev1.Volume{
 				{

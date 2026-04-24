@@ -161,7 +161,7 @@ func TestBuildMountPodLabels(t *testing.T) {
 		serviceAccount:  "sa",
 		cacheDir:        "/cache",
 	}
-	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/model", "/mnt/abc", []string{"repo", "user/model", "/mnt/hf/abc"})
+	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/model", "/mnt/abc", []string{"repo", "user/model", "/mnt/hf/abc"}, MountResources{})
 
 	if pod.Labels[labelApp] != labelAppValue {
 		t.Errorf("label %s = %q, want %q", labelApp, pod.Labels[labelApp], labelAppValue)
@@ -209,7 +209,7 @@ func TestBuildMountPodNodeAffinity(t *testing.T) {
 		serviceAccount:  "sa",
 		cacheDir:        "/cache",
 	}
-	pod := m.buildMountPod("hf-mount-abc", "abc", "bucket", "user/b", "/mnt/abc", []string{"bucket", "user/b", "/mnt/hf/abc"})
+	pod := m.buildMountPod("hf-mount-abc", "abc", "bucket", "user/b", "/mnt/abc", []string{"bucket", "user/b", "/mnt/hf/abc"}, MountResources{})
 
 	affinity := pod.Spec.Affinity
 	if affinity == nil || affinity.NodeAffinity == nil {
@@ -241,7 +241,7 @@ func TestBuildMountPodImagePullSecrets(t *testing.T) {
 		serviceAccount: "sa",
 		cacheDir:       "/cache",
 	}
-	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", []string{"repo", "user/m", "/mnt/hf/abc"})
+	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", []string{"repo", "user/m", "/mnt/hf/abc"}, MountResources{})
 
 	if len(pod.Spec.ImagePullSecrets) != 2 {
 		t.Fatalf("expected 2 pull secrets, got %d", len(pod.Spec.ImagePullSecrets))
@@ -260,7 +260,7 @@ func TestBuildMountPodServiceAccount(t *testing.T) {
 		serviceAccount:  "custom-sa",
 		cacheDir:        "/cache",
 	}
-	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", nil)
+	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", nil, MountResources{})
 
 	if pod.Spec.ServiceAccountName != "custom-sa" {
 		t.Errorf("service account = %q, want %q", pod.Spec.ServiceAccountName, "custom-sa")
@@ -277,7 +277,7 @@ func TestBuildMountPodTolerations(t *testing.T) {
 		serviceAccount:  "sa",
 		cacheDir:        "/cache",
 	}
-	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", nil)
+	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/m", "/mnt/abc", nil, MountResources{})
 
 	if len(pod.Spec.Tolerations) != 1 {
 		t.Fatalf("expected 1 toleration, got %d", len(pod.Spec.Tolerations))

@@ -5,74 +5,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
+
+	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 )
 
 var (
 	defaultSidecarCPURequest    = resource.MustParse("10m")
 	defaultSidecarMemoryRequest = resource.MustParse("32Mi")
 )
-
-// buildSidecarResources produces the ResourceRequirements for the injected
-// hf-mount container, applying the already-parsed user overrides on top of
-// the built-in defaults. If a user override results in request > limit for a
-// given resource (e.g. default 32Mi request + memoryLimit: 16Mi), the
-// request is clamped down to the limit so the apiserver never rejects the
-// pod because of a conflicting per-volume hint.
-func buildSidecarResources(overrides sidecarResources) corev1.ResourceRequirements {
-	req := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:    defaultSidecarCPURequest,
-			corev1.ResourceMemory: defaultSidecarMemoryRequest,
-		},
-	}
-
-	if overrides.CPURequest != nil {
-		req.Requests[corev1.ResourceCPU] = *overrides.CPURequest
-	}
-	if overrides.MemoryRequest != nil {
-		req.Requests[corev1.ResourceMemory] = *overrides.MemoryRequest
-	}
-	if overrides.CPULimit != nil {
-		if req.Limits == nil {
-			req.Limits = corev1.ResourceList{}
-		}
-		req.Limits[corev1.ResourceCPU] = *overrides.CPULimit
-	}
-	if overrides.MemoryLimit != nil {
-		if req.Limits == nil {
-			req.Limits = corev1.ResourceList{}
-		}
-		req.Limits[corev1.ResourceMemory] = *overrides.MemoryLimit
-	}
-
-	clampRequestToLimit(&req, corev1.ResourceCPU)
-	clampRequestToLimit(&req, corev1.ResourceMemory)
-
-	return req
-}
-
-// clampRequestToLimit ensures req.Requests[name] <= req.Limits[name].
-// Violations are clamped (not rejected) so a typo or an accidentally-small
-// limit in volumeAttributes never blocks pod admission.
-func clampRequestToLimit(req *corev1.ResourceRequirements, name corev1.ResourceName) {
-	if req.Limits == nil {
-		return
-	}
-	lim, hasLim := req.Limits[name]
-	if !hasLim {
-		return
-	}
-	rq, hasRq := req.Requests[name]
-	if !hasRq {
-		return
-	}
-	if rq.Cmp(lim) > 0 {
-		klog.Warningf("Webhook: %s request %s exceeds limit %s; clamping request to limit", name, rq.String(), lim.String())
-		req.Requests[name] = lim
-	}
-}
 
 // injectSidecar adds the hf-mount native sidecar container and the shared
 // emptyDir volume to the pod spec. The sidecar runs unprivileged: it receives
@@ -82,7 +23,7 @@ func clampRequestToLimit(req *corev1.ResourceRequirements, name corev1.ResourceN
 // resources carries optional per-pod resource overrides collected from
 // volumeAttributes. Invalid quantity strings are logged and dropped so a
 // typo never blocks pod admission.
-func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources sidecarResources) {
+func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources driver.MountResources) {
 	// Add the shared emptyDir volume for config + socket communication.
 	// Use tmpfs (Memory) because the args file may contain the HF token.
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
@@ -142,7 +83,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources si
 			PeriodSeconds:    1,
 			FailureThreshold: 120,
 		},
-		Resources: buildSidecarResources(resources),
+		Resources: driver.BuildResourceRequirements(resources, defaultSidecarCPURequest, defaultSidecarMemoryRequest),
 	}
 
 	// Prepend as init container (native sidecar, KEP-753).
