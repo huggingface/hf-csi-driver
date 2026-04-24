@@ -30,7 +30,16 @@ const (
 	volumeCtxLruSweepIntervalMs = "lruSweepIntervalMs"
 	volumeCtxTokenKey           = "tokenKey"
 	volumeCtxMountFlags         = "mountFlags"
+	volumeCtxMountMode          = "mountMode"
 	volumeCtxPodUID             = "csi.storage.k8s.io/pod.uid"
+
+	// MountModeSidecar runs the FUSE daemon as an injected sidecar in the
+	// workload pod; the CSI driver opens /dev/fuse and passes the fd via
+	// SCM_RIGHTS. Default when the workload pod UID is available.
+	MountModeSidecar = "sidecar"
+	// MountModeMountPod runs the FUSE daemon in a dedicated per-volume mount
+	// pod managed by the CSI driver.
+	MountModeMountPod = "mountpod"
 )
 
 func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -66,7 +75,20 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	token := req.GetSecrets()[tokenKey]
 
 	workloadPodUID := volCtx[volumeCtxPodUID]
-	willUseSidecar := d.sidecarMode && workloadPodUID != ""
+	mode := getWithDefault(volCtx, volumeCtxMountMode, MountModeSidecar)
+	switch mode {
+	case MountModeSidecar, MountModeMountPod:
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "invalid mountMode %q (must be %q or %q)", mode, MountModeSidecar, MountModeMountPod)
+	}
+	// Sidecar mode needs the workload pod UID (passed by kubelet via
+	// podInfoOnMount). If unavailable, fall back to mount-pod mode so older
+	// kubelets or CSIDriver configs without podInfoOnMount still work.
+	if mode == MountModeSidecar && workloadPodUID == "" {
+		klog.Warningf("mountMode=sidecar requested but no pod UID (podInfoOnMount disabled?), falling back to mount-pod for %s", volumeID)
+		mode = MountModeMountPod
+	}
+	willUseSidecar := mode == MountModeSidecar
 
 	// Check existing mount state.
 	mounted, err := d.mounter.IsMountPoint(target)

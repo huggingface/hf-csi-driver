@@ -50,7 +50,6 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: |
           helm lint deploy/helm/hf-csi-driver/
-          helm lint deploy/helm/hf-csi-driver/ --set webhook.enabled=true
 
   e2e-podmount:
     name: E2E (podmount)
@@ -102,11 +101,16 @@ jobs:
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
             --set image.pullPolicy=Never \
+            --set webhook.image.repository=hf-csi-driver \
+            --set webhook.image.tag=test \
+            --set webhook.image.pullPolicy=Never \
             --set hfMount.image.repository=hf-mount-fuse \
             --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
           kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
             --namespace default --timeout=60s
+          kubectl rollout status deployment hf-csi-hf-csi-driver-webhook \
+            --namespace default --timeout=120s
 
       - name: Verify resources
         run: |
@@ -136,6 +140,7 @@ jobs:
                 name: hf-token
                 namespace: default
               volumeAttributes:
+                mountMode: mountpod
                 sourceType: repo
                 sourceId: openai-community/gpt2
                 revision: main
@@ -332,6 +337,7 @@ jobs:
                 name: hf-token
                 namespace: default
               volumeAttributes:
+                mountMode: mountpod
                 sourceType: repo
                 sourceId: distilbert/distilgpt2
                 revision: main
@@ -405,6 +411,7 @@ jobs:
               csi:
                 driver: hf.csi.huggingface.co
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: repo
                   sourceId: openai-community/gpt2
             restartPolicy: Never
@@ -434,6 +441,7 @@ jobs:
               csi:
                 driver: hf.csi.huggingface.co
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: repo
                   sourceId: this-repo/does-not-exist-at-all
             restartPolicy: Never
@@ -502,6 +510,7 @@ jobs:
                 nodePublishSecretRef:
                   name: hf-ci-token
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: bucket
                   sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
@@ -548,6 +557,7 @@ jobs:
                 nodePublishSecretRef:
                   name: hf-ci-token
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: bucket
                   sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
@@ -629,7 +639,6 @@ jobs:
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
             --set image.pullPolicy=Never \
-            --set webhook.enabled=true \
             --set webhook.image.repository=hf-csi-driver \
             --set webhook.image.tag=test \
             --set webhook.image.pullPolicy=Never \

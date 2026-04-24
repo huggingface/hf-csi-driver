@@ -1,4 +1,3 @@
-{{- if .Values.webhook.enabled }}
 {{- $svcName := printf "%s-webhook" (include "hf-csi-driver.fullname" .) }}
 {{- $secretName := printf "%s-webhook-tls" (include "hf-csi-driver.fullname" .) }}
 {{- $existingSecret := lookup "v1" "Secret" .Release.Namespace $secretName }}
@@ -94,5 +93,4 @@ webhooks:
         apiVersions: ["v1"]
         resources: ["pods"]
         scope: Namespaced
-{{- end }}
 {{- end }}
