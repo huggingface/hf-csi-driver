@@ -36,7 +36,6 @@ func main() {
 		mountPullSecrets = flag.String("mount-pull-secrets", "", "Comma-separated image pull secret names for mount pods")
 		mountServiceAcct = flag.String("mount-service-account", "hf-csi-driver", "Service account for mount pods")
 		mountHostNetwork = flag.Bool("mount-host-network", true, "Enable hostNetwork on mount pods")
-		sidecarMode      = flag.Bool("sidecar-mode", false, "Use sidecar fd-passing instead of mount pods")
 		namespace        = flag.String("namespace", "kube-system", "Namespace for mount pods")
 
 		// Webhook mode flags
@@ -57,7 +56,7 @@ func main() {
 
 	switch *mode {
 	case "node":
-		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork, *sidecarMode)
+		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork)
 	case "webhook":
 		runWebhook(*webhookPort, *webhookCertDir, *sidecarImage)
 	default:
@@ -65,7 +64,7 @@ func main() {
 	}
 }
 
-func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork, sidecarMode bool) {
+func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork bool) {
 	if nodeID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -102,7 +101,7 @@ func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullS
 	}
 
 	mounter := driver.NewPodMounter(client, dynClient, namespace, nodeID, mountImage, corev1.PullPolicy(mountPullPolicy), pullSecrets, mountServiceAcct, cacheDir, mountHostNetwork)
-	drv := driver.NewDriver(endpoint, nodeID, cacheDir, sidecarMode, mounter)
+	drv := driver.NewDriver(endpoint, nodeID, cacheDir, mounter)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

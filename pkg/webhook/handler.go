@@ -34,6 +34,11 @@ const (
 	volumeAttrMemoryRequest = "memoryRequest"
 	volumeAttrCPULimit      = "cpuLimit"
 	volumeAttrCPURequest    = "cpuRequest"
+
+	// volumeAttrMountMode opts a volume out of sidecar injection when set to
+	// "mountpod". Must stay in sync with pkg/driver: volumeCtxMountMode.
+	volumeAttrMountMode    = "mountMode"
+	mountModeMountPod      = "mountpod"
 )
 
 // sidecarResources holds the already-parsed quantities collected from
@@ -153,19 +158,26 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaledPod)
 }
 
-// scanHFCSIVolumes returns the number of HF CSI volumes in the pod
-// (inline ephemeral or PV-backed via PVC) and the merged sidecar resource
-// hints collected from their volumeAttributes.
+// scanHFCSIVolumes returns the number of HF CSI volumes in the pod that
+// require sidecar injection (inline ephemeral or PV-backed via PVC) and the
+// merged sidecar resource hints collected from their volumeAttributes.
+// Volumes explicitly opted out via mountMode=mountpod are skipped.
 func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, sidecarResources) {
 	count := 0
 	var resources sidecarResources
 	for _, vol := range pod.Spec.Volumes {
 		switch {
 		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
+			if vol.CSI.VolumeAttributes[volumeAttrMountMode] == mountModeMountPod {
+				continue
+			}
 			count++
 			resources.mergeMax(resourcesFromVolumeAttrs(vol.CSI.VolumeAttributes))
 		case vol.PersistentVolumeClaim != nil:
 			if pv := i.resolvePVFromPVC(ctx, vol.PersistentVolumeClaim.ClaimName, namespace); pv != nil {
+				if pv.Spec.CSI.VolumeAttributes[volumeAttrMountMode] == mountModeMountPod {
+					continue
+				}
 				count++
 				resources.mergeMax(resourcesFromVolumeAttrs(pv.Spec.CSI.VolumeAttributes))
 			}

@@ -89,6 +89,14 @@ func TestNodePublishVolume_MissingFields(t *testing.T) {
 			},
 			VolumeContext: map[string]string{"sourceType": "bucket"},
 		}},
+		{"invalid mountMode", &csi.NodePublishVolumeRequest{
+			VolumeId:   "vol1",
+			TargetPath: "/mnt",
+			VolumeCapability: &csi.VolumeCapability{
+				AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			},
+			VolumeContext: map[string]string{"sourceType": "bucket", "sourceId": "user/b", "mountMode": "bogus"},
+		}},
 	}
 
 	for _, tt := range tests {

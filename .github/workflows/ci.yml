@@ -136,6 +136,7 @@ jobs:
                 name: hf-token
                 namespace: default
               volumeAttributes:
+                mountMode: mountpod
                 sourceType: repo
                 sourceId: openai-community/gpt2
                 revision: main
@@ -332,6 +333,7 @@ jobs:
                 name: hf-token
                 namespace: default
               volumeAttributes:
+                mountMode: mountpod
                 sourceType: repo
                 sourceId: distilbert/distilgpt2
                 revision: main
@@ -405,6 +407,7 @@ jobs:
               csi:
                 driver: hf.csi.huggingface.co
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: repo
                   sourceId: openai-community/gpt2
             restartPolicy: Never
@@ -434,6 +437,7 @@ jobs:
               csi:
                 driver: hf.csi.huggingface.co
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: repo
                   sourceId: this-repo/does-not-exist-at-all
             restartPolicy: Never
@@ -502,6 +506,7 @@ jobs:
                 nodePublishSecretRef:
                   name: hf-ci-token
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: bucket
                   sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
@@ -548,6 +553,7 @@ jobs:
                 nodePublishSecretRef:
                   name: hf-ci-token
                 volumeAttributes:
+                  mountMode: mountpod
                   sourceType: bucket
                   sourceId: chris-rannou/csi-e2e-bucket
             restartPolicy: Never
