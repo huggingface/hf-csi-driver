@@ -1,12 +1,14 @@
 image:
   repository: ghcr.io/huggingface/hf-csi-driver
-  tag: v0.4.3
+  # Overwritten at release time by .github/workflows/release.yml
+  tag: latest
   pullPolicy: IfNotPresent
 
 hfMount:
   image:
     repository: ghcr.io/huggingface/hf-mount-fuse
-    tag: v0.3.2
+    # Overwritten at release time with the latest hf-mount release tag
+    tag: latest
     pullPolicy: IfNotPresent
   hostNetwork: true
 
@@ -31,7 +33,8 @@ webhook:
   enabled: false
   image:
     repository: ghcr.io/huggingface/hf-csi-driver
-    tag: v0.4.3
+    # Overwritten at release time by .github/workflows/release.yml
+    tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
   port: 9443
