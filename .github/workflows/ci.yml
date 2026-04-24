@@ -588,9 +588,23 @@ jobs:
           done
           kubectl logs test-resources | grep RESOURCES_OK
 
+          # Find the HFMount CRD for this workload (via spec.workloads[].podUID)
+          # and read the mountPodName from it. The per-volume label uses a hash
+          # of the target path, not the CSI volumeHandle, so we cannot select by
+          # volume id directly.
+          WORKLOAD_UID=$(kubectl get pod test-resources -o jsonpath='{.metadata.uid}')
+          CRD_JSON=$(kubectl get hfmount -n default -o json | WORKLOAD_UID="$WORKLOAD_UID" python3 -c '
+          import json, os, sys
+          items = json.load(sys.stdin)["items"]
+          uid = os.environ["WORKLOAD_UID"]
+          match = next((i for i in items if any(w.get("podUID") == uid for w in i["spec"].get("workloads", []))), None)
+          assert match, f"no HFMount found referencing workload pod UID {uid}"
+          print(json.dumps(match["spec"]))
+          ')
+          MOUNT_POD=$(echo "$CRD_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mountPodName"])')
+          echo "Mount pod: $MOUNT_POD"
+
           # Verify the mount pod received the user-specified resources.
-          MOUNT_POD=$(kubectl get pods -l hf.csi.huggingface.co/volume-id=test-resources -n default -o jsonpath='{.items[0].metadata.name}')
-          [ -n "$MOUNT_POD" ] || { echo "ERROR: no mount pod found"; exit 1; }
           kubectl get pod "$MOUNT_POD" -n default -o json | python3 -c '
           import json, sys
           res = json.load(sys.stdin)["spec"]["containers"][0]["resources"]
@@ -602,13 +616,10 @@ jobs:
           '
 
           # Verify the HFMount CRD persisted the resources for heal.
-          kubectl get hfmount -n default -o json | MOUNT_POD="$MOUNT_POD" python3 -c '
-          import json, os, sys
-          items = json.load(sys.stdin)["items"]
-          target = os.environ["MOUNT_POD"]
-          match = next((i for i in items if i["spec"].get("mountPodName") == target), None)
-          assert match, f"no HFMount with mountPodName={target}"
-          res = match["spec"].get("resources") or {}
+          echo "$CRD_JSON" | python3 -c '
+          import json, sys
+          spec = json.load(sys.stdin)
+          res = spec.get("resources") or {}
           want = {"cpuRequest":"50m", "cpuLimit":"1", "memoryRequest":"64Mi", "memoryLimit":"256Mi"}
           for k, v in want.items():
               assert res.get(k) == v, f"CRD resources.{k}: want {v}, got {res.get(k)}; full={res}"
