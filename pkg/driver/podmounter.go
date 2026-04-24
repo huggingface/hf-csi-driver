@@ -280,17 +280,10 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		return
 	}
 
-	// Build a set of live pod UIDs on this node.
-	allPods, listErr := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + m.nodeID,
-	})
+	livePodUIDs, listErr := m.listLivePodUIDsOnNode(ctx)
 	if listErr != nil {
 		klog.V(4).Infof("cleanupStaleCRDs: cannot list pods: %v", listErr)
 		return
-	}
-	livePodUIDs := make(map[string]bool, len(allPods.Items))
-	for _, p := range allPods.Items {
-		livePodUIDs[string(p.UID)] = true
 	}
 
 	for _, item := range crds {
@@ -434,28 +427,21 @@ func podUIDFromTarget(target string) string {
 // kubelet path) still maps to a pod object. Orphan refs are force-unmounted
 // lazily so the source mount can eventually be released. Refs without a
 // parseable UID are kept — we can only evict what we can identify.
-func (m *PodMounter) dropDeadPodRefs(mountPath string, refs []string) []string {
+//
+// Runs one apiserver List for the whole batch instead of one per ref.
+func (m *PodMounter) dropDeadPodRefs(refs []string) []string {
 	if len(refs) == 0 {
 		return refs
 	}
-	ctx := context.TODO()
+	livePodUIDs, err := m.listLivePodUIDsOnNode(context.TODO())
+	if err != nil {
+		klog.V(4).Infof("dropDeadPodRefs: cannot list node pods, keeping all refs: %v", err)
+		return refs
+	}
 	alive := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		uid := podUIDFromTarget(ref)
-		if uid == "" {
-			alive = append(alive, ref)
-			continue
-		}
-		// Lookup the pod by UID across the cluster. We cannot use the informer
-		// cache (mount pods only) so we ask the apiserver directly. Rare path
-		// (only when cleanup runs on an orphan ref), cheap enough.
-		found, err := m.podExistsByUID(ctx, uid)
-		if err != nil {
-			klog.V(4).Infof("dropDeadPodRefs: cannot verify pod UID %s, keeping ref: %v", uid, err)
-			alive = append(alive, ref)
-			continue
-		}
-		if found {
+		if uid == "" || livePodUIDs[uid] {
 			alive = append(alive, ref)
 			continue
 		}
@@ -463,34 +449,30 @@ func (m *PodMounter) dropDeadPodRefs(mountPath string, refs []string) []string {
 		if err := fuseUnmount(ref); err != nil {
 			klog.Warningf("Force umount of orphan bind %s failed: %v", ref, err)
 			alive = append(alive, ref)
-		} else {
-			m.mu.Lock()
-			delete(m.binds, ref)
-			m.mu.Unlock()
+			continue
 		}
+		m.mu.Lock()
+		delete(m.binds, ref)
+		m.mu.Unlock()
 	}
 	return alive
 }
 
-// podExistsByUID returns true if a pod with the given UID currently exists in
-// the cluster. Uses a field selector when the apiserver supports it.
-func (m *PodMounter) podExistsByUID(ctx context.Context, uid string) (bool, error) {
-	// metadata.uid is not indexed as a field selector in kube-apiserver, so we
-	// list pods on the node (already narrow) and filter client-side. For the
-	// current node that's usually a few dozen pods.
+// listLivePodUIDsOnNode returns the set of UIDs of pods currently scheduled
+// on this node. Shared by the stale-workload cleaner and the orphan-bind
+// check so a single cleanup tick pays one List instead of one per site.
+func (m *PodMounter) listLivePodUIDsOnNode(ctx context.Context) (map[string]bool, error) {
 	list, err := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + m.nodeID,
-		Limit:         500,
 	})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	uids := make(map[string]bool, len(list.Items))
 	for _, p := range list.Items {
-		if string(p.UID) == uid {
-			return true, nil
-		}
+		uids[string(p.UID)] = true
 	}
-	return false, nil
+	return uids, nil
 }
 
 // cleanupSource handles cleanup when a mount pod enters a terminal phase or
@@ -513,7 +495,7 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 	// leaks the bind mount when a pod dies abruptly, which would otherwise
 	// keep the source mount alive forever (tryHealSource would rebuild a pod
 	// nobody needs).
-	mountRefs = m.dropDeadPodRefs(mountPath, mountRefs)
+	mountRefs = m.dropDeadPodRefs(mountRefs)
 	if len(mountRefs) > 0 {
 		klog.Infof("Source %s still has %d kernel refs, attempting heal", mountPath, len(mountRefs))
 		go m.tryHealSource(mountPath)
