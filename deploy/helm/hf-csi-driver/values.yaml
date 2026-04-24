@@ -29,8 +29,10 @@ tolerations:
 
 priorityClassName: system-node-critical
 
+# Sidecar injection webhook. Required for the default per-volume mountMode
+# "sidecar" to work. Disable only if every volume sets mountMode: mountpod.
 webhook:
-  enabled: false
+  enabled: true
   image:
     repository: ghcr.io/huggingface/hf-csi-driver
     # Overwritten at release time by .github/workflows/release.yml

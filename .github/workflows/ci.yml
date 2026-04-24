@@ -102,6 +102,7 @@ jobs:
             --set image.repository=hf-csi-driver \
             --set image.tag=test \
             --set image.pullPolicy=Never \
+            --set webhook.enabled=false \
             --set hfMount.image.repository=hf-mount-fuse \
             --set hfMount.image.tag=v0.3.1 \
             --set hfMount.image.pullPolicy=Never
