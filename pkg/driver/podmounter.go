@@ -681,7 +681,15 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	// Create HFMount CRD. This is the source of truth for mount args, required
 	// for pod recreation on failure. Mount must fail if CRD cannot be persisted.
 	crdName := hfMountName(volumeID)
-	if crdErr := m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args, opts.Resources); crdErr != nil {
+	if crdErr := m.crd.create(ctx, crdName, hfMountSpec{
+		NodeName:     m.nodeID,
+		SourceType:   sourceType,
+		SourceID:     sourceID,
+		MountPodName: podName,
+		MountPath:    mountPath,
+		MountArgs:    args,
+		Resources:    opts.Resources,
+	}); crdErr != nil {
 		if !errors.IsAlreadyExists(crdErr) {
 			return fmt.Errorf("failed to create HFMount CRD %s: %w", crdName, crdErr)
 		}

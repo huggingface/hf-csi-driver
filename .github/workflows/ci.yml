@@ -583,18 +583,29 @@ jobs:
           # Verify the mount pod received the user-specified resources.
           MOUNT_POD=$(kubectl get pods -l hf.csi.huggingface.co/volume-id=test-resources -n default -o jsonpath='{.items[0].metadata.name}')
           [ -n "$MOUNT_POD" ] || { echo "ERROR: no mount pod found"; exit 1; }
-          SPEC=$(kubectl get pod "$MOUNT_POD" -n default -o json | python3 -c "import json,sys;p=json.load(sys.stdin)['spec']['containers'][0]['resources'];print(json.dumps(p))")
-          echo "Mount pod resources: $SPEC"
-          echo "$SPEC" | grep -q '"cpu": "50m"' || { echo "ERROR: cpu request not 50m"; exit 1; }
-          echo "$SPEC" | grep -q '"memory": "64Mi"' || { echo "ERROR: memory request not 64Mi"; exit 1; }
-          echo "$SPEC" | grep -q '"cpu": "1"' || { echo "ERROR: cpu limit not 1"; exit 1; }
-          echo "$SPEC" | grep -q '"memory": "256Mi"' || { echo "ERROR: memory limit not 256Mi"; exit 1; }
+          kubectl get pod "$MOUNT_POD" -n default -o json | python3 -c '
+          import json, sys
+          res = json.load(sys.stdin)["spec"]["containers"][0]["resources"]
+          want = {("requests","cpu"):"50m", ("requests","memory"):"64Mi", ("limits","cpu"):"1", ("limits","memory"):"256Mi"}
+          for (section, key), expected in want.items():
+              got = res.get(section, {}).get(key)
+              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
+          print("mount pod resources OK:", json.dumps(res))
+          '
 
           # Verify the HFMount CRD persisted the resources for heal.
-          CRD=$(kubectl get hfmount -n default -o json | python3 -c "import json,sys;items=json.load(sys.stdin)['items'];print(json.dumps([i['spec'].get('resources') for i in items if i['spec'].get('mountPodName')=='$MOUNT_POD']))")
-          echo "CRD resources: $CRD"
-          echo "$CRD" | grep -q '"cpuLimit": "1"' || { echo "ERROR: CRD missing cpuLimit"; exit 1; }
-          echo "$CRD" | grep -q '"memoryLimit": "256Mi"' || { echo "ERROR: CRD missing memoryLimit"; exit 1; }
+          kubectl get hfmount -n default -o json | MOUNT_POD="$MOUNT_POD" python3 -c '
+          import json, os, sys
+          items = json.load(sys.stdin)["items"]
+          target = os.environ["MOUNT_POD"]
+          match = next((i for i in items if i["spec"].get("mountPodName") == target), None)
+          assert match, f"no HFMount with mountPodName={target}"
+          res = match["spec"].get("resources") or {}
+          want = {"cpuRequest":"50m", "cpuLimit":"1", "memoryRequest":"64Mi", "memoryLimit":"256Mi"}
+          for k, v in want.items():
+              assert res.get(k) == v, f"CRD resources.{k}: want {v}, got {res.get(k)}; full={res}"
+          print("CRD resources OK:", json.dumps(res))
+          '
 
           kubectl delete pod test-resources --ignore-not-found
           kubectl delete pvc test-pvc-resources --ignore-not-found
@@ -1069,12 +1080,17 @@ jobs:
           kubectl wait pod/test-sidecar-resources --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
           kubectl logs test-sidecar-resources | grep SIDECAR_RESOURCES_OK
 
-          SPEC=$(kubectl get pod test-sidecar-resources -o json | python3 -c "import json,sys;pod=json.load(sys.stdin);c=[c for c in pod['spec']['initContainers'] if c['name']=='hf-mount'][0];print(json.dumps(c['resources']))")
-          echo "Sidecar resources: $SPEC"
-          echo "$SPEC" | grep -q '"cpu": "75m"' || { echo "ERROR: cpu request not 75m"; exit 1; }
-          echo "$SPEC" | grep -q '"memory": "96Mi"' || { echo "ERROR: memory request not 96Mi"; exit 1; }
-          echo "$SPEC" | grep -q '"cpu": "2"' || { echo "ERROR: cpu limit not 2"; exit 1; }
-          echo "$SPEC" | grep -q '"memory": "512Mi"' || { echo "ERROR: memory limit not 512Mi"; exit 1; }
+          kubectl get pod test-sidecar-resources -o json | python3 -c '
+          import json, sys
+          pod = json.load(sys.stdin)
+          sidecar = next(c for c in pod["spec"]["initContainers"] if c["name"] == "hf-mount")
+          res = sidecar["resources"]
+          want = {("requests","cpu"):"75m", ("requests","memory"):"96Mi", ("limits","cpu"):"2", ("limits","memory"):"512Mi"}
+          for (section, key), expected in want.items():
+              got = res.get(section, {}).get(key)
+              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
+          print("sidecar resources OK:", json.dumps(res))
+          '
           echo "SUCCESS: Sidecar honored resource overrides from volumeAttributes"
 
       - name: Debug on failure

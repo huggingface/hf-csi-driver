@@ -93,9 +93,8 @@ func BuildResourceRequirements(overrides MountResources, defaultCPURequest, defa
 	return req
 }
 
-// ToStringMap serialises MountResources to a string->string map suitable
-// for round-tripping through an unstructured Kubernetes object (e.g. the
-// HFMount CRD spec). Empty fields are omitted so the stored map is minimal.
+// ToStringMap serialises MountResources to a string->string map. Empty
+// fields are omitted so downstream storage (CRD spec, etc.) stays minimal.
 func (r MountResources) ToStringMap() map[string]string {
 	m := map[string]string{}
 	if r.CPULimit != nil {
@@ -113,9 +112,24 @@ func (r MountResources) ToStringMap() map[string]string {
 	return m
 }
 
+// ToUnstructured is ToStringMap typed for unstructured.Unstructured, which
+// only accepts map[string]interface{}. Returns nil when there are no fields
+// so callers can omit the key with a `len(...) > 0` check.
+func (r MountResources) ToUnstructured() map[string]interface{} {
+	src := r.ToStringMap()
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // MountResourcesFromUnstructured reads a MountResources out of an unstructured
-// spec map (four optional string fields keyed like volumeAttributes). Missing
-// or non-string entries yield nil fields.
+// map (four optional string fields keyed like volumeAttributes). Missing or
+// non-string entries yield nil fields so a malformed CRD can never panic.
 func MountResourcesFromUnstructured(raw map[string]interface{}) MountResources {
 	attrs := map[string]string{}
 	for k, v := range raw {
