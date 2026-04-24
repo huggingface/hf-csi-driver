@@ -16,7 +16,7 @@ func quantityPtr(s string) *resource.Quantity {
 }
 
 func buildFromOverrides(overrides driver.MountResources) corev1.ResourceRequirements {
-	return driver.BuildResourceRequirements(overrides, defaultSidecarCPURequest, defaultSidecarMemoryRequest)
+	return driver.BuildResourceRequirements(overrides, driver.DefaultMountCPURequest, driver.DefaultMountMemoryRequest)
 }
 
 func TestBuildSidecarResources_Defaults(t *testing.T) {

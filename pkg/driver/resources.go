@@ -1,21 +1,26 @@
 package driver
 
 import (
-	"fmt"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
 )
 
 // volumeAttributes keys recognised by the driver to configure the FUSE
-// daemon container resources (mount pod or injected sidecar). Must stay
-// in sync with pkg/webhook: the injector reads the same keys.
+// daemon container resources (mount pod or injected sidecar).
 const (
-	VolumeAttrCPULimit      = "cpuLimit"
-	VolumeAttrCPURequest    = "cpuRequest"
-	VolumeAttrMemoryLimit   = "memoryLimit"
-	VolumeAttrMemoryRequest = "memoryRequest"
+	volumeCtxCPULimit      = "cpuLimit"
+	volumeCtxCPURequest    = "cpuRequest"
+	volumeCtxMemoryLimit   = "memoryLimit"
+	volumeCtxMemoryRequest = "memoryRequest"
+)
+
+// Default resource requests applied to the FUSE daemon container (mount
+// pod or injected sidecar) when the user does not set cpuRequest /
+// memoryRequest in volumeAttributes.
+var (
+	DefaultMountCPURequest    = resource.MustParse("10m")
+	DefaultMountMemoryRequest = resource.MustParse("32Mi")
 )
 
 // MountResources carries already-parsed resource overrides. A nil field
@@ -31,10 +36,10 @@ type MountResources struct {
 // Invalid quantities are logged and dropped so a typo never blocks a pod.
 func ParseMountResources(attrs map[string]string) MountResources {
 	return MountResources{
-		CPULimit:      parseQuantityAttr(VolumeAttrCPULimit, attrs[VolumeAttrCPULimit]),
-		CPURequest:    parseQuantityAttr(VolumeAttrCPURequest, attrs[VolumeAttrCPURequest]),
-		MemoryLimit:   parseQuantityAttr(VolumeAttrMemoryLimit, attrs[VolumeAttrMemoryLimit]),
-		MemoryRequest: parseQuantityAttr(VolumeAttrMemoryRequest, attrs[VolumeAttrMemoryRequest]),
+		CPULimit:      parseQuantityAttr(volumeCtxCPULimit, attrs[volumeCtxCPULimit]),
+		CPURequest:    parseQuantityAttr(volumeCtxCPURequest, attrs[volumeCtxCPURequest]),
+		MemoryLimit:   parseQuantityAttr(volumeCtxMemoryLimit, attrs[volumeCtxMemoryLimit]),
+		MemoryRequest: parseQuantityAttr(volumeCtxMemoryRequest, attrs[volumeCtxMemoryRequest]),
 	}
 }
 
@@ -104,18 +109,4 @@ func clampRequestToLimit(req *corev1.ResourceRequirements, name corev1.ResourceN
 		klog.Warningf("%s request %s exceeds limit %s; clamping request to limit", name, rq.String(), lim.String())
 		req.Requests[name] = lim
 	}
-}
-
-// String renders a MountResources as a short debug string.
-func (r MountResources) String() string {
-	return fmt.Sprintf("cpu={req:%s lim:%s} mem={req:%s lim:%s}",
-		qstr(r.CPURequest), qstr(r.CPULimit),
-		qstr(r.MemoryRequest), qstr(r.MemoryLimit))
-}
-
-func qstr(q *resource.Quantity) string {
-	if q == nil {
-		return "-"
-	}
-	return q.String()
 }

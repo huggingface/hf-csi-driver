@@ -12,7 +12,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
@@ -1037,11 +1036,6 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	go m.rebindTargets(mountPath)
 }
 
-var (
-	defaultMountPodCPURequest    = resource.MustParse("10m")
-	defaultMountPodMemoryRequest = resource.MustParse("32Mi")
-)
-
 func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string, resources MountResources) *corev1.Pod {
 	bidirectional := corev1.MountPropagationBidirectional
 
@@ -1109,7 +1103,7 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 						MountPath: m.cacheDir,
 					},
 				},
-				Resources: BuildResourceRequirements(resources, defaultMountPodCPURequest, defaultMountPodMemoryRequest),
+				Resources: BuildResourceRequirements(resources, DefaultMountCPURequest, DefaultMountMemoryRequest),
 			}},
 			Volumes: []corev1.Volume{
 				{

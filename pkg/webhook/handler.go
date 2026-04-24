@@ -61,7 +61,6 @@ func maxQuantity(a, b *resource.Quantity) *resource.Quantity {
 	}
 }
 
-
 // Config holds the webhook configuration.
 type Config struct {
 	// SidecarImage is the container image for the sidecar mounter.

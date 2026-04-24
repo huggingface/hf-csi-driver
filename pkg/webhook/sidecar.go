@@ -4,15 +4,9 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
-)
-
-var (
-	defaultSidecarCPURequest    = resource.MustParse("10m")
-	defaultSidecarMemoryRequest = resource.MustParse("32Mi")
 )
 
 // injectSidecar adds the hf-mount native sidecar container and the shared
@@ -83,7 +77,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 			PeriodSeconds:    1,
 			FailureThreshold: 120,
 		},
-		Resources: driver.BuildResourceRequirements(resources, defaultSidecarCPURequest, defaultSidecarMemoryRequest),
+		Resources: driver.BuildResourceRequirements(resources, driver.DefaultMountCPURequest, driver.DefaultMountMemoryRequest),
 	}
 
 	// Prepend as init container (native sidecar, KEP-753).
