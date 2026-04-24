@@ -280,17 +280,10 @@ func (m *PodMounter) cleanupStaleCRDs() {
 		return
 	}
 
-	// Build a set of live pod UIDs on this node.
-	allPods, listErr := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + m.nodeID,
-	})
+	livePodUIDs, listErr := m.listLivePodUIDsOnNode(ctx)
 	if listErr != nil {
 		klog.V(4).Infof("cleanupStaleCRDs: cannot list pods: %v", listErr)
 		return
-	}
-	livePodUIDs := make(map[string]bool, len(allPods.Items))
-	for _, p := range allPods.Items {
-		livePodUIDs[string(p.UID)] = true
 	}
 
 	for _, item := range crds {
@@ -379,19 +372,107 @@ func (m *PodMounter) lateAdopt(mountPath string) {
 		return
 	}
 
+	volumeID := filepath.Base(mountPath)
+	crdName := hfMountName(volumeID)
+	ctx := context.TODO()
+
 	m.mu.Lock()
+	var restored []string
 	for _, ref := range refs {
-		if ref != mountPath {
-			if _, exists := m.binds[ref]; !exists {
-				m.binds[ref] = mountPath
-				klog.Infof("Late adopt: restored bind %s -> %s", ref, mountPath)
-			}
+		if ref == mountPath {
+			continue
+		}
+		if _, exists := m.binds[ref]; !exists {
+			m.binds[ref] = mountPath
+			restored = append(restored, ref)
+			klog.Infof("Late adopt: restored bind %s -> %s", ref, mountPath)
 		}
 	}
 	m.mu.Unlock()
 
+	// Re-sync the CRD workloads list for the binds we just restored. Without
+	// this, cleanupStaleCRDs sees workloads=[] and races with tryHealSource
+	// which still sees the kernel refs, trapping the mount pod in a delete/
+	// heal loop (observed on hub-prod, see fix commit).
+	for _, ref := range restored {
+		uid := podUIDFromTarget(ref)
+		if uid == "" {
+			klog.V(4).Infof("Late adopt: cannot parse pod UID from %s, skipping CRD sync", ref)
+			continue
+		}
+		logCRDError("addWorkload", crdName, m.crd.addWorkload(ctx, crdName, uid, ref))
+	}
+
 	// Rebind any stale targets (e.g. mount pod restarted while driver was down).
 	go m.rebindTargets(mountPath)
+}
+
+// podUIDFromTarget extracts the pod UID from a kubelet bind-mount target
+// like /var/lib/kubelet/pods/<UID>/volumes/kubernetes.io~csi/<pv>/mount.
+// Returns "" if the path does not follow that layout.
+func podUIDFromTarget(target string) string {
+	const prefix = "/var/lib/kubelet/pods/"
+	rest, ok := strings.CutPrefix(target, prefix)
+	if !ok {
+		return ""
+	}
+	end := strings.IndexByte(rest, '/')
+	if end <= 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+// dropDeadPodRefs returns the subset of `refs` whose pod UID (parsed from the
+// kubelet path) still maps to a pod object. Orphan refs are force-unmounted
+// lazily so the source mount can eventually be released. Refs without a
+// parseable UID are kept — we can only evict what we can identify.
+//
+// Runs one apiserver List for the whole batch instead of one per ref.
+func (m *PodMounter) dropDeadPodRefs(refs []string) []string {
+	if len(refs) == 0 {
+		return refs
+	}
+	livePodUIDs, err := m.listLivePodUIDsOnNode(context.TODO())
+	if err != nil {
+		klog.V(4).Infof("dropDeadPodRefs: cannot list node pods, keeping all refs: %v", err)
+		return refs
+	}
+	alive := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		uid := podUIDFromTarget(ref)
+		if uid == "" || livePodUIDs[uid] {
+			alive = append(alive, ref)
+			continue
+		}
+		klog.Warningf("Force-unmounting orphan bind %s (pod UID %s no longer exists)", ref, uid)
+		if err := fuseUnmount(ref); err != nil {
+			klog.Warningf("Force umount of orphan bind %s failed: %v", ref, err)
+			alive = append(alive, ref)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.binds, ref)
+		m.mu.Unlock()
+	}
+	return alive
+}
+
+// listLivePodUIDsOnNode returns the set of UIDs of pods currently scheduled
+// on this node. Shared by the stale-workload cleaner and the orphan-bind
+// check so a single cleanup tick pays one List instead of one per site.
+func (m *PodMounter) listLivePodUIDsOnNode(ctx context.Context) (map[string]bool, error) {
+	list, err := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: "spec.nodeName=" + m.nodeID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	uids := make(map[string]bool, len(list.Items))
+	for _, p := range list.Items {
+		uids[string(p.UID)] = true
+	}
+	return uids, nil
 }
 
 // cleanupSource handles cleanup when a mount pod enters a terminal phase or
@@ -410,6 +491,11 @@ func (m *PodMounter) cleanupSource(mountPath string) {
 		klog.Warningf("Cannot enumerate mount refs for %s, deferring cleanup: %v", mountPath, refErr)
 		return
 	}
+	// Drop refs that belong to pods that no longer exist: kubelet sometimes
+	// leaks the bind mount when a pod dies abruptly, which would otherwise
+	// keep the source mount alive forever (tryHealSource would rebuild a pod
+	// nobody needs).
+	mountRefs = m.dropDeadPodRefs(mountRefs)
 	if len(mountRefs) > 0 {
 		klog.Infof("Source %s still has %d kernel refs, attempting heal", mountPath, len(mountRefs))
 		go m.tryHealSource(mountPath)
