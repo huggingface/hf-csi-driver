@@ -37,17 +37,37 @@ const (
 	// so we use /var/run/hf-csi/<hash> -> <long kubelet path>.
 	symlinkBase = "/var/run/hf-csi"
 
-	// sidecarFuseFdCount is how many /dev/fuse fds (1 primary + N-1 clones)
-	// the CSI driver pre-creates per volume and ships to the sidecar. The
-	// sidecar runs one reader thread per fd; the bottleneck is typically
-	// network so single-digit counts are plenty.
-	sidecarFuseFdCount = 4
+	// defaultSidecarFuseFdCount is how many /dev/fuse fds (1 primary + N-1
+	// clones) the CSI driver pre-creates per volume by default. The sidecar
+	// runs one reader thread per fd; the bottleneck is typically network so
+	// single-digit counts are plenty. Overridable via HF_CSI_SIDECAR_FUSE_FD_COUNT
+	// — set to 1 to pin compatibility with hf-mount sidecars older than
+	// hf-mount#126 (those only accept a single-fd cmsg).
+	defaultSidecarFuseFdCount = 4
 
 	// fuseDevIoctlClone is the FUSE_DEV_IOC_CLONE ioctl number, encoded by
 	// _IOR(229, 0, uint32_t). Cloning binds the new fd to the same FUSE
 	// connection without reopening /dev/fuse.
 	fuseDevIoctlClone = 0x8004E500
 )
+
+// sidecarFuseFdCount returns the configured number of fds to ship to the
+// sidecar (1 primary + N-1 clones), clamped to [1, 32].
+func sidecarFuseFdCount() int {
+	n := defaultSidecarFuseFdCount
+	if v := os.Getenv("HF_CSI_SIDECAR_FUSE_FD_COUNT"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 1 {
+			klog.Warningf("invalid HF_CSI_SIDECAR_FUSE_FD_COUNT=%q, falling back to %d", v, n)
+		} else {
+			n = parsed
+		}
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
 
 // cloneFuseFd issues FUSE_DEV_IOC_CLONE to bind a fresh fd to the same
 // FUSE connection as `src`. The new fd is returned; the caller owns it
@@ -241,8 +261,9 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 		// multi-threaded reader. The sidecar can't issue FUSE_DEV_IOC_CLONE
 		// itself (the ioctl reopens /dev/fuse, which needs CAP_SYS_ADMIN).
 		// We send the primary plus N-1 clones in a single SCM_RIGHTS cmsg.
+		fdCount := sidecarFuseFdCount()
 		fds := []int{fd}
-		for i := 1; i < sidecarFuseFdCount; i++ {
+		for i := 1; i < fdCount; i++ {
 			cloned, err := cloneFuseFd(fd)
 			if err != nil {
 				klog.Warningf("clone /dev/fuse fd=%d (#%d): %v — falling back to fewer threads", fd, i, err)
