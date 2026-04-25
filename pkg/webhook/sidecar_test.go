@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 )
@@ -152,5 +153,85 @@ func TestResourcesFromVolumeAttrs_NilMap(t *testing.T) {
 	r := driver.ParseMountResources(nil)
 	if r.MemoryLimit != nil || r.MemoryRequest != nil || r.CPULimit != nil || r.CPURequest != nil {
 		t.Fatalf("nil attrs must yield all-nil resources, got %#v", r)
+	}
+}
+
+// Pods with no explicit grace period get the minimum bumped in so the sidecar
+// has time to flush after SIGTERM. The original value ("unset") is recorded
+// as an annotation.
+func TestEnsureTerminationGracePeriod_Unset(t *testing.T) {
+	pod := &corev1.Pod{}
+	ensureTerminationGracePeriod(pod)
+	if pod.Spec.TerminationGracePeriodSeconds == nil ||
+		*pod.Spec.TerminationGracePeriodSeconds != MinTerminationGracePeriodSeconds {
+		t.Fatalf("want grace=%d, got %v", MinTerminationGracePeriodSeconds, pod.Spec.TerminationGracePeriodSeconds)
+	}
+	if got := pod.Annotations[AnnotationOriginalGracePeriod]; got != "unset" {
+		t.Fatalf("want annotation %q=unset, got %q", AnnotationOriginalGracePeriod, got)
+	}
+}
+
+// Jobs pods set grace=0 (immediate SIGKILL); the webhook must raise it,
+// otherwise pending writes never make it back to the bucket. The original
+// "0" must be preserved in the annotation so the bump is traceable.
+func TestEnsureTerminationGracePeriod_ZeroIsRaised(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
+	ensureTerminationGracePeriod(pod)
+	if got := *pod.Spec.TerminationGracePeriodSeconds; got != MinTerminationGracePeriodSeconds {
+		t.Fatalf("want grace=%d, got %d", MinTerminationGracePeriodSeconds, got)
+	}
+	if got := pod.Annotations[AnnotationOriginalGracePeriod]; got != "0" {
+		t.Fatalf("want annotation %q=0, got %q", AnnotationOriginalGracePeriod, got)
+	}
+}
+
+// A grace period below the minimum is raised to the minimum and recorded.
+func TestEnsureTerminationGracePeriod_BelowMinIsRaised(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](5)}}
+	ensureTerminationGracePeriod(pod)
+	if got := *pod.Spec.TerminationGracePeriodSeconds; got != MinTerminationGracePeriodSeconds {
+		t.Fatalf("want grace=%d, got %d", MinTerminationGracePeriodSeconds, got)
+	}
+	if got := pod.Annotations[AnnotationOriginalGracePeriod]; got != "5" {
+		t.Fatalf("want annotation %q=5, got %q", AnnotationOriginalGracePeriod, got)
+	}
+}
+
+// A pod that already requests more grace than the minimum (Endpoints uses
+// 3600s) must not be lowered, and no annotation is added.
+func TestEnsureTerminationGracePeriod_AboveMinIsKept(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](3600)}}
+	ensureTerminationGracePeriod(pod)
+	if got := *pod.Spec.TerminationGracePeriodSeconds; got != 3600 {
+		t.Fatalf("want grace=3600 preserved, got %d", got)
+	}
+	if _, ok := pod.Annotations[AnnotationOriginalGracePeriod]; ok {
+		t.Fatalf("annotation %q must not be set when grace was already sufficient", AnnotationOriginalGracePeriod)
+	}
+}
+
+// Exactly equal to the minimum is a no-op (no annotation either).
+func TestEnsureTerminationGracePeriod_EqualMinIsKept(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To(MinTerminationGracePeriodSeconds)}}
+	ensureTerminationGracePeriod(pod)
+	if got := *pod.Spec.TerminationGracePeriodSeconds; got != MinTerminationGracePeriodSeconds {
+		t.Fatalf("want grace=%d, got %d", MinTerminationGracePeriodSeconds, got)
+	}
+	if _, ok := pod.Annotations[AnnotationOriginalGracePeriod]; ok {
+		t.Fatalf("annotation %q must not be set when grace was already sufficient", AnnotationOriginalGracePeriod)
+	}
+}
+
+// injectSidecar should set the grace period and record the bump as part of
+// the same admission patch.
+func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+	if pod.Spec.TerminationGracePeriodSeconds == nil ||
+		*pod.Spec.TerminationGracePeriodSeconds != MinTerminationGracePeriodSeconds {
+		t.Fatalf("want grace=%d after injection, got %v", MinTerminationGracePeriodSeconds, pod.Spec.TerminationGracePeriodSeconds)
+	}
+	if got := pod.Annotations[AnnotationOriginalGracePeriod]; got != "0" {
+		t.Fatalf("want annotation %q=0 after injection, got %q", AnnotationOriginalGracePeriod, got)
 	}
 }

@@ -13,4 +13,15 @@ echo "$INIT" | grep -q hf-mount || { kubectl get pod test-ephemeral -o yaml; fai
 VOLS=$(kubectl get pod test-ephemeral -o jsonpath='{.spec.volumes[*].name}')
 echo "$VOLS" | grep -q hf-csi-tmp || fail "hf-csi-tmp volume not injected"
 
+# The webhook also raises terminationGracePeriodSeconds so the sidecar can
+# flush bucket writes on shutdown. test-ephemeral was created without an
+# explicit grace period, so the API server defaulted it to 30s before the
+# webhook saw it; the webhook bumps it to 60 and records "30" as the
+# original value in an annotation.
+GRACE=$(kubectl get pod test-ephemeral -o jsonpath='{.spec.terminationGracePeriodSeconds}')
+[[ "$GRACE" == "60" ]] || fail "terminationGracePeriodSeconds: want 60, got '$GRACE'"
+ORIG=$(kubectl get pod test-ephemeral \
+  -o jsonpath='{.metadata.annotations.hf\.csi\.huggingface\.co/original-termination-grace-period-seconds}')
+[[ "$ORIG" == "30" ]] || fail "original grace annotation: want '30', got '$ORIG'"
+
 ok "sidecar/02-sidecar-injected"

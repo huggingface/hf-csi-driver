@@ -9,6 +9,24 @@ import (
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 )
 
+// MinTerminationGracePeriodSeconds is the minimum pod-level grace period the
+// webhook enforces when a sidecar is injected. The sidecar receives SIGTERM at
+// pod shutdown and may need several seconds to flush pending writes back to
+// the bucket: the FUSE flush queue uses a 2s debounce and batches up to 30s of
+// changes, and the upload itself is bounded by network throughput. Pods with
+// a shorter grace period (notably Jobs, which sets it to 0) get SIGKILLed
+// before the flush completes and lose data.
+const MinTerminationGracePeriodSeconds int64 = 60
+
+// AnnotationOriginalGracePeriod records the pod-level
+// terminationGracePeriodSeconds the webhook observed before raising it to
+// MinTerminationGracePeriodSeconds. The annotation is only set when the
+// webhook actually changed the value, so its presence is a signal that the
+// bump happened. The value is the original number as a string ("0", "5",
+// ...), or "unset" when the field was nil. Lets operators understand why a
+// pod takes longer to terminate than the spec they wrote.
+const AnnotationOriginalGracePeriod = "hf.csi.huggingface.co/original-termination-grace-period-seconds"
+
 // injectSidecar adds the hf-mount native sidecar container and the shared
 // emptyDir volume to the pod spec. The sidecar runs unprivileged: it receives
 // the FUSE fd from the CSI driver via SCM_RIGHTS (the CSI driver does the
@@ -84,4 +102,30 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 	// Must be first so the FUSE daemon is running before other init containers
 	// that might access the HF volume.
 	pod.Spec.InitContainers = append([]corev1.Container{sidecar}, pod.Spec.InitContainers...)
+
+	ensureTerminationGracePeriod(pod)
+}
+
+// ensureTerminationGracePeriod raises the pod-level grace period to at least
+// MinTerminationGracePeriodSeconds so the sidecar has time to flush pending
+// writes after receiving SIGTERM. Pods that already request a longer grace
+// period are left unchanged. When the webhook changes the value it records
+// the original in AnnotationOriginalGracePeriod so the bump is traceable.
+func ensureTerminationGracePeriod(pod *corev1.Pod) {
+	current := pod.Spec.TerminationGracePeriodSeconds
+	if current != nil && *current >= MinTerminationGracePeriodSeconds {
+		return
+	}
+
+	original := "unset"
+	if current != nil {
+		original = fmt.Sprintf("%d", *current)
+	}
+
+	pod.Spec.TerminationGracePeriodSeconds = ptr.To(MinTerminationGracePeriodSeconds)
+
+	if pod.Annotations == nil {
+		pod.Annotations = map[string]string{}
+	}
+	pod.Annotations[AnnotationOriginalGracePeriod] = original
 }
