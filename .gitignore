@@ -2,3 +2,4 @@ bin/
 /hf-csi-driver
 *.exe
 .DS_Store
+hf-mount/
