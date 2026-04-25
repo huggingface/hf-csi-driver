@@ -30,6 +30,7 @@ spec:
       name: hf-token
       namespace: $NAMESPACE
     volumeAttributes:
+      mountMode: mountpod
       sourceType: repo
       sourceId: openai-community/gpt2
       revision: main

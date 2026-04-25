@@ -38,7 +38,8 @@ spec:
       nodePublishSecretRef:
         name: hf-ci-token
       volumeAttributes:
-        sourceType: bucket
+        mountMode: mountpod
+      sourceType: bucket
         sourceId: $HUB_BUCKET
   restartPolicy: Never
 EOF

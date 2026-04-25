@@ -23,6 +23,7 @@ spec:
       name: hf-token
       namespace: $NAMESPACE
     volumeAttributes:
+      mountMode: mountpod
       sourceType: repo
       sourceId: distilbert/distilgpt2
       revision: main
