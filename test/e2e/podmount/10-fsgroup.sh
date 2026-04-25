@@ -7,7 +7,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/../lib.sh"
 
 : "${HF_TOKEN:?HF_TOKEN is required for bucket tests}"
-HUB_BUCKET=${HUB_BUCKET:-chris-rannou/csi-e2e-bucket}
+HUB_BUCKET=${HUB_BUCKET:-xcid/csi-e2e-bucket}
 
 kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
 

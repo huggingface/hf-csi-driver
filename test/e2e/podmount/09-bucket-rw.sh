@@ -7,7 +7,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 source "$SCRIPT_DIR/../lib.sh"
 
 : "${HF_TOKEN:?HF_TOKEN is required for bucket tests}"
-HUB_BUCKET=${HUB_BUCKET:-chris-rannou/csi-e2e-bucket}
+HUB_BUCKET=${HUB_BUCKET:-xcid/csi-e2e-bucket}
 HUB_API=${HUB_API:-https://huggingface.co/api}
 
 curl -sf "$HUB_API/whoami-v2" -H "Authorization: Bearer $HF_TOKEN" | head -1
