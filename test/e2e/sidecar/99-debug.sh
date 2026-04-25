@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Debug dump for failed sidecar e2e runs. Always exits 0.
 
-set +e
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
+# lib.sh sets -euo pipefail; relax those here so a single missing pod
+# does not abort the dump.
+set +eu +o pipefail
 
 echo "=== CSI driver logs ==="
 kubectl logs -l app=hf-csi-node --tail=100 -c hf-csi-plugin
