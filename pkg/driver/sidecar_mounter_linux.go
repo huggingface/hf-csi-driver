@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/util"
 	"k8s.io/klog/v2"
@@ -35,7 +36,35 @@ const (
 	// volume directories. Unix socket paths are limited to 108 characters,
 	// so we use /var/run/hf-csi/<hash> -> <long kubelet path>.
 	symlinkBase = "/var/run/hf-csi"
+
+	// sidecarFuseFdCount is how many /dev/fuse fds (1 primary + N-1 clones)
+	// the CSI driver pre-creates per volume and ships to the sidecar. The
+	// sidecar runs one reader thread per fd; the bottleneck is typically
+	// network so single-digit counts are plenty.
+	sidecarFuseFdCount = 4
+
+	// fuseDevIoctlClone is the FUSE_DEV_IOC_CLONE ioctl number, encoded by
+	// _IOR(229, 0, uint32_t). Cloning binds the new fd to the same FUSE
+	// connection without reopening /dev/fuse.
+	fuseDevIoctlClone = 0x8004E500
 )
+
+// cloneFuseFd issues FUSE_DEV_IOC_CLONE to bind a fresh fd to the same
+// FUSE connection as `src`. The new fd is returned; the caller owns it
+// and must close it.
+func cloneFuseFd(src int) (int, error) {
+	dst, err := syscall.Open("/dev/fuse", syscall.O_RDWR, 0o644)
+	if err != nil {
+		return -1, fmt.Errorf("open /dev/fuse for clone: %w", err)
+	}
+	srcFd := uint32(src)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(dst), uintptr(fuseDevIoctlClone), uintptr(unsafe.Pointer(&srcFd)))
+	if errno != 0 {
+		_ = syscall.Close(dst)
+		return -1, fmt.Errorf("FUSE_DEV_IOC_CLONE: %w", errno)
+	}
+	return dst, nil
+}
 
 // sidecarMountPath is where the sidecar sees the shared emptyDir.
 const sidecarMountPath = "/hf-csi-tmp"
@@ -208,20 +237,38 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 		}
 		defer func() { _ = conn.Close() }()
 
-		// Send the fd via SCM_RIGHTS. The kernel duplicates the fd into the
-		// sidecar's fd table. We pass nil as the data payload (the sidecar
-		// reads its config from the args file, not from the socket message).
-		if err := util.SendMsg(conn, fd, nil); err != nil {
-			klog.Errorf("SendMsg fd=%d: %v", fd, err)
-			_ = syscall.Close(fd)
+		// Pre-clone the FUSE fd so the unprivileged sidecar can run a
+		// multi-threaded reader. The sidecar can't issue FUSE_DEV_IOC_CLONE
+		// itself (the ioctl reopens /dev/fuse, which needs CAP_SYS_ADMIN).
+		// We send the primary plus N-1 clones in a single SCM_RIGHTS cmsg.
+		fds := []int{fd}
+		for i := 1; i < sidecarFuseFdCount; i++ {
+			cloned, err := cloneFuseFd(fd)
+			if err != nil {
+				klog.Warningf("clone /dev/fuse fd=%d (#%d): %v — falling back to fewer threads", fd, i, err)
+				break
+			}
+			fds = append(fds, cloned)
+		}
+
+		// Send the fds via SCM_RIGHTS. The kernel duplicates each fd into
+		// the sidecar's fd table. We pass nil as the data payload (the
+		// sidecar reads its config from the args file, not from the socket).
+		if err := util.SendMsgFds(conn, fds, nil); err != nil {
+			klog.Errorf("SendMsgFds count=%d primary=%d: %v", len(fds), fd, err)
+			for _, f := range fds {
+				_ = syscall.Close(f)
+			}
 			return
 		}
 
-		klog.Infof("Sent fd=%d to sidecar for %s %s", fd, sourceType, sourceID)
+		klog.Infof("Sent %d fd(s) (primary=%d) to sidecar for %s %s", len(fds), fd, sourceType, sourceID)
 
-		// The sidecar now owns a duplicate of the fd. Close our copy to
-		// avoid leaking one fd per volume on the CSI driver.
-		_ = syscall.Close(fd)
+		// The sidecar now owns duplicates of every fd. Close our copies
+		// to avoid leaking N fds per volume on the CSI driver.
+		for _, f := range fds {
+			_ = syscall.Close(f)
+		}
 	}()
 
 	return nil

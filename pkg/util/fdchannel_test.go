@@ -156,3 +156,130 @@ func TestSendRecvMsg_MultipleFDs(t *testing.T) {
 		}
 	}
 }
+
+// TestSendMsgFds_MultiFdSingleCmsg verifies that SendMsgFds packs N fds
+// into a single SCM_RIGHTS cmsg and the receiver gets them all back. This
+// is the wire format the Rust sidecar expects for #94 multi-threaded mode.
+func TestSendMsgFds_MultiFdSingleCmsg(t *testing.T) {
+	const n = 3
+	dir, err := os.MkdirTemp("", "fdtest")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	sockPath := filepath.Join(dir, "s")
+
+	files := make([]*os.File, n)
+	fds := make([]int, n)
+	contents := make([]string, n)
+	for i := range files {
+		f, err := os.CreateTemp(dir, "multi")
+		if err != nil {
+			t.Fatalf("create temp[%d]: %v", i, err)
+		}
+		defer func() { _ = f.Close() }()
+		contents[i] = "payload-" + string(rune('A'+i))
+		if _, err := f.WriteString(contents[i]); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		files[i] = f
+		fds[i] = int(f.Fd())
+	}
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	sendErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			sendErr <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		sendErr <- SendMsgFds(conn, fds, []byte("hello"))
+	}()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	uc := conn.(*net.UnixConn)
+	f, err := uc.File()
+	if err != nil {
+		t.Fatalf("uc.File: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, 4096)
+	oob := make([]byte, syscall.CmsgSpace(4*n))
+	_, oobn, _, _, err := syscall.Recvmsg(int(f.Fd()), buf, oob, 0)
+	if err != nil {
+		t.Fatalf("recvmsg: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("SendMsgFds: %v", err)
+	}
+
+	msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+	if err != nil {
+		t.Fatalf("parse cmsg: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 cmsg, got %d", len(msgs))
+	}
+	got, err := syscall.ParseUnixRights(&msgs[0])
+	if err != nil {
+		t.Fatalf("parse rights: %v", err)
+	}
+	if len(got) != n {
+		t.Fatalf("expected %d fds, got %d", n, len(got))
+	}
+
+	for i, fd := range got {
+		defer func(fd int) { _ = syscall.Close(fd) }(fd)
+		recv := os.NewFile(uintptr(fd), "recv")
+		if _, err := recv.Seek(0, 0); err != nil {
+			t.Fatalf("seek[%d]: %v", i, err)
+		}
+		data := make([]byte, 64)
+		nb, err := recv.Read(data)
+		if err != nil {
+			t.Fatalf("read[%d]: %v", i, err)
+		}
+		if string(data[:nb]) != contents[i] {
+			t.Errorf("fd[%d]: got %q, want %q", i, data[:nb], contents[i])
+		}
+	}
+}
+
+// TestSendMsgFds_Empty rejects a zero-fd send instead of producing an
+// invalid cmsg the receiver couldn't parse.
+func TestSendMsgFds_Empty(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "test.sock")
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+	go func() {
+		c, _ := listener.Accept()
+		if c != nil {
+			_ = c.Close()
+		}
+	}()
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := SendMsgFds(conn, nil, []byte("x")); err == nil {
+		t.Fatal("expected error on empty fd list")
+	}
+}
