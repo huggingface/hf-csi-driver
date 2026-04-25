@@ -196,11 +196,7 @@ jobs:
       - name: 08-multi-volume
         run: test/e2e/sidecar/08-multi-volume.sh
 
-      # 09-stuck-sidecar is a regression test for PR #23 (sidecar-unpublish
-      # fast path). It is committed but disabled here; enable by setting
-      # E2E_RUN_STUCK_SIDECAR=1 on the step below once the fix lands.
       - name: 09-stuck-sidecar
-        if: env.E2E_RUN_STUCK_SIDECAR == '1'
         run: test/e2e/sidecar/09-stuck-sidecar.sh
 
       - name: Debug on failure
