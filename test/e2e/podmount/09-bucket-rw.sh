@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Bucket read-write (requires HF_TOKEN).
+
+set -euo pipefail
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+# shellcheck source=../lib.sh
+source "$SCRIPT_DIR/../lib.sh"
+
+setup_bucket_token
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-bucket-rw
+spec:
+  containers:
+  - name: test
+    image: $BUSYBOX_IMAGE
+    command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
+    volumeMounts:
+    - name: bucket
+      mountPath: /mnt/output
+  volumes:
+  - name: bucket
+    csi:
+      driver: hf.csi.huggingface.co
+      nodePublishSecretRef:
+        name: hf-ci-token
+      volumeAttributes:
+        mountMode: mountpod
+        sourceType: bucket
+        sourceId: $HUB_BUCKET
+  restartPolicy: Never
+EOF
+
+wait_pod_succeeded test-bucket-rw 180s
+kubectl logs test-bucket-rw | grep BUCKET_RW_OK
+ok "podmount/09-bucket-rw"

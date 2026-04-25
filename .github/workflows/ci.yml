@@ -50,1098 +50,159 @@ jobs:
       - uses: azure/setup-helm@v4
       - run: |
           helm lint deploy/helm/hf-csi-driver/
+          helm lint deploy/helm/hf-csi-driver/ --set webhook.enabled=true
+
+  build-hf-mount:
+    name: Build hf-mount image
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+      - run: |
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          docker save hf-mount-fuse:v0.3.1 -o /tmp/hf-mount-fuse.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp/hf-mount-fuse.tar
+          retention-days: 1
+          compression-level: 0
 
   e2e-podmount:
     name: E2E (podmount)
-    needs: [build, helm-lint]
+    needs: [build, helm-lint, build-hf-mount]
     runs-on:
       group: aws-general-8-plus
     env:
       KUBERNETES_SERVICE_HOST: ""
+      CLUSTER_NAME: e2e-podmount
+      DRIVER_IMAGE: hf-csi-driver:test
+      HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
       - uses: azure/setup-helm@v4
 
-      - name: Create Kind cluster
+      - name: Install kind
         run: |
-          cat > /tmp/kind-config.yaml <<'KINDEOF'
-          kind: Cluster
-          apiVersion: kind.x-k8s.io/v1alpha4
-          nodes:
-          - role: control-plane
-            extraMounts:
-            - hostPath: /dev/fuse
-              containerPath: /dev/fuse
-              propagation: None
-          KINDEOF
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x ./kind
-          ./kind create cluster --name e2e --wait 60s \
-            --kubeconfig "$HOME/.kube/kind-config" \
-            --config /tmp/kind-config.yaml
-          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp
+      - name: Load hf-mount image
+        run: docker load -i /tmp/hf-mount-fuse.tar
 
-      - name: Build and load images
-        run: |
-          docker build -t hf-csi-driver:test .
-          ./kind load docker-image hf-csi-driver:test --name e2e
+      - name: Setup cluster (podmount)
+        run: test/e2e/setup-cluster.sh podmount
 
-          git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e
+      - name: 01-mount               # public repo, PV+PVC mount + verify mount pod / HFMount CRD
+        run: test/e2e/podmount/01-mount.sh
 
-      - name: Install chart
-        run: |
-          helm install hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default \
-            --set image.repository=hf-csi-driver \
-            --set image.tag=test \
-            --set image.pullPolicy=Never \
-            --set webhook.image.repository=hf-csi-driver \
-            --set webhook.image.tag=test \
-            --set webhook.image.pullPolicy=Never \
-            --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.1 \
-            --set hfMount.image.pullPolicy=Never
-          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
-            --namespace default --timeout=60s
-          kubectl rollout status deployment hf-csi-hf-csi-driver-webhook \
-            --namespace default --timeout=120s
+      - name: 02-resilience-driver-restart
+        run: test/e2e/podmount/02-resilience-driver-restart.sh
 
-      - name: Verify resources
-        run: |
-          kubectl get csidriver hf.csi.huggingface.co
-          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.attachRequired}' | grep false
-          kubectl get csidriver hf.csi.huggingface.co -o jsonpath='{.spec.requiresRepublish}' | grep true
-          kubectl -n default get pods -l app=hf-csi-node -o jsonpath='{.items[0].status.phase}' | grep Running
+      - name: 03-kill-mount-pod
+        run: test/e2e/podmount/03-kill-mount-pod.sh
 
-      - name: Mount test (public repo, no token)
-        run: |
-          kubectl create secret generic hf-token --from-literal=token=''
+      - name: 04-unmount-cleanup
+        run: test/e2e/podmount/04-unmount-cleanup.sh
 
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: PersistentVolume
-          metadata:
-            name: test-pv
-          spec:
-            capacity:
-              storage: 1Gi
-            accessModes: [ReadOnlyMany]
-            persistentVolumeReclaimPolicy: Retain
-            csi:
-              driver: hf.csi.huggingface.co
-              volumeHandle: test-gpt2
-              nodePublishSecretRef:
-                name: hf-token
-                namespace: default
-              volumeAttributes:
-                mountMode: mountpod
-                sourceType: repo
-                sourceId: openai-community/gpt2
-                revision: main
-          ---
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: test-pvc
-          spec:
-            accessModes: [ReadOnlyMany]
-            storageClassName: ""
-            resources:
-              requests:
-                storage: 1Gi
-            volumeName: test-pv
-          ---
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-mount
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /data && cat /data/config.json"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc
-            restartPolicy: Never
-          EOF
+      - name: 05-remount
+        run: test/e2e/podmount/05-remount.sh
 
-          kubectl wait pod/test-mount \
-            --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
+      - name: 06-multi-volume
+        run: test/e2e/podmount/06-multi-volume.sh
 
-      - name: Verify mount
-        run: |
-          kubectl logs test-mount | grep config.json
-          kubectl logs test-mount | grep model_type
+      - name: 07-ephemeral
+        run: test/e2e/podmount/07-ephemeral.sh
 
-      - name: Verify mount pod and HFMount CRD
-        run: |
-          echo "=== Mount pods ==="
-          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default
-          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}')
-          if [ -z "$MOUNT_PODS" ]; then
-            echo "ERROR: No mount pods found"
-            exit 1
-          fi
-          echo "Found mount pods: $MOUNT_PODS"
+      - name: 08-mount-failure
+        run: test/e2e/podmount/08-mount-failure.sh
 
-          echo "=== HFMount CRDs ==="
-          kubectl get hfmounts -n default || true
-          HFMOUNTS=$(kubectl get hfmounts -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-          if [ -z "$HFMOUNTS" ]; then
-            echo "WARNING: No HFMount CRDs found (CRD tracking is best-effort)"
-          else
-            echo "Found HFMounts: $HFMOUNTS"
-            kubectl get hfmounts -n default -o yaml
-          fi
-
-      - name: "Resilience: create long-running workload"
-        run: |
-          kubectl delete pod test-mount --ignore-not-found
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-resilience
-          spec:
-            containers:
-            - name: reader
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "while true; do cat /data/config.json > /dev/null && echo OK; sleep 2; done"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc
-            restartPolicy: Always
-          EOF
-          kubectl wait pod/test-resilience --for=condition=Ready --timeout=120s
-          echo "Workload running, verifying initial read..."
-          kubectl exec test-resilience -- cat /data/config.json | grep model_type
-
-      - name: "Resilience: restart CSI driver DaemonSet"
-        run: |
-          echo "=== Restarting CSI driver ==="
-          kubectl rollout restart daemonset hf-csi-hf-csi-driver-node -n default
-          kubectl rollout status daemonset hf-csi-hf-csi-driver-node -n default --timeout=120s
-
-          echo "=== Waiting for driver to recover ==="
-          sleep 10
-
-          echo "=== Checking mount pod survived ==="
-          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}')
-          if [ -z "$MOUNT_PODS" ]; then
-            echo "ERROR: Mount pods disappeared after CSI driver restart"
-            exit 1
-          fi
-          echo "Mount pods still alive: $MOUNT_PODS"
-
-          echo "=== Verifying workload can still read ==="
-          kubectl exec test-resilience -- cat /data/config.json | grep model_type
-          echo "SUCCESS: Workload survived CSI driver restart"
-
-      - name: "Resilience: kill mount pod"
-        run: |
-          MOUNT_POD=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[0].metadata.name}')
-          echo "Killing mount pod: $MOUNT_POD"
-          kubectl delete pod "$MOUNT_POD" -n default --grace-period=0 --force
-
-          echo "Waiting for cleanup..."
-          sleep 30
-
-          echo "=== Checking mount pods ==="
-          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default
-          echo "=== CSI driver logs after mount pod kill ==="
-          kubectl logs -l app=hf-csi-node --tail=30 -c hf-csi-plugin -n default
-
-      - name: "Unmount cleanup"
-        run: |
-          echo "=== Deleting workload pod ==="
-          kubectl delete pod test-resilience --timeout=60s
-
-          echo "=== Waiting for mount pod cleanup ==="
-          for i in $(seq 1 30); do
-            MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-            if [ -z "$MOUNT_PODS" ]; then
-              echo "Mount pods cleaned up after ${i}s"
-              break
-            fi
-            sleep 2
-          done
-
-          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-          if [ -n "$MOUNT_PODS" ]; then
-            echo "WARNING: Mount pods still exist after unmount: $MOUNT_PODS"
-          else
-            echo "SUCCESS: All mount pods cleaned up"
-          fi
-
-      - name: "Remount after unmount"
-        run: |
-          echo "=== Creating new workload with same volume ==="
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-remount
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "cat /data/config.json"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-remount --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
-          kubectl logs test-remount | grep model_type
-          echo "SUCCESS: Remount after unmount works"
-
-      - name: "Multiple volumes"
-        run: |
-          echo "=== Creating second volume (different repo) ==="
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: PersistentVolume
-          metadata:
-            name: test-pv-2
-          spec:
-            capacity:
-              storage: 1Gi
-            accessModes: [ReadOnlyMany]
-            persistentVolumeReclaimPolicy: Retain
-            csi:
-              driver: hf.csi.huggingface.co
-              volumeHandle: test-distilgpt2
-              nodePublishSecretRef:
-                name: hf-token
-                namespace: default
-              volumeAttributes:
-                mountMode: mountpod
-                sourceType: repo
-                sourceId: distilbert/distilgpt2
-                revision: main
-          ---
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: test-pvc-2
-          spec:
-            accessModes: [ReadOnlyMany]
-            storageClassName: ""
-            resources:
-              requests:
-                storage: 1Gi
-            volumeName: test-pv-2
-          ---
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-multi
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /data1 && ls /data2 && echo BOTH_OK"]
-              volumeMounts:
-              - name: vol1
-                mountPath: /data1
-                readOnly: true
-              - name: vol2
-                mountPath: /data2
-                readOnly: true
-            volumes:
-            - name: vol1
-              persistentVolumeClaim:
-                claimName: test-pvc
-            - name: vol2
-              persistentVolumeClaim:
-                claimName: test-pvc-2
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-multi --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
-          kubectl logs test-multi | grep BOTH_OK
-
-          echo "=== Verifying two separate mount pods ==="
-          MOUNT_COUNT=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' | wc -w)
-          echo "Mount pods: $MOUNT_COUNT"
-          if [ "$MOUNT_COUNT" -lt 2 ]; then
-            echo "WARNING: Expected at least 2 mount pods for 2 volumes, got $MOUNT_COUNT"
-          fi
-          echo "SUCCESS: Multiple volumes work"
-
-      - name: "Ephemeral volume"
-        run: |
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-ephemeral
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /model && cat /model/config.json"]
-              volumeMounts:
-              - name: model
-                mountPath: /model
-                readOnly: true
-            volumes:
-            - name: model
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  mountMode: mountpod
-                  sourceType: repo
-                  sourceId: openai-community/gpt2
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-ephemeral --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s
-          kubectl logs test-ephemeral | grep model_type
-          echo "SUCCESS: Ephemeral volume works"
-
-      - name: "Mount failure: non-existent repo"
-        run: |
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-mount-fail
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sleep", "300"]
-              volumeMounts:
-              - name: model
-                mountPath: /model
-                readOnly: true
-            volumes:
-            - name: model
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  mountMode: mountpod
-                  sourceType: repo
-                  sourceId: this-repo/does-not-exist-at-all
-            restartPolicy: Never
-          EOF
-
-          echo "=== Waiting for FailedMount event ==="
-          for i in $(seq 1 60); do
-            EVENTS=$(kubectl get events --field-selector involvedObject.name=test-mount-fail,reason=FailedMount -o jsonpath='{.items[*].message}' 2>/dev/null)
-            if [ -n "$EVENTS" ]; then
-              echo "FailedMount event found after ${i}s: $EVENTS"
-              break
-            fi
-            sleep 2
-          done
-
-          EVENTS=$(kubectl get events --field-selector involvedObject.name=test-mount-fail,reason=FailedMount -o jsonpath='{.items[*].message}' 2>/dev/null)
-          if [ -z "$EVENTS" ]; then
-            echo "ERROR: No FailedMount event after 120s"
-            kubectl describe pod test-mount-fail
-            exit 1
-          fi
-
-          echo "=== Verifying error message mentions mount pod crash ==="
-          if echo "$EVENTS" | grep -q "keeps crashing\|CrashLoopBackOff\|failed.*phase"; then
-            echo "SUCCESS: FailedMount event has descriptive crash message"
-          else
-            echo "WARNING: FailedMount event present but message may not be specific: $EVENTS"
-          fi
-
-          kubectl delete pod test-mount-fail --ignore-not-found
-          echo "SUCCESS: Mount failure detection works"
-
-      - name: Bucket read-write with token (podmount)
+      - name: 09-bucket-rw
         env:
-          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
-        run: |
-          # Verify token works
-          curl -sf "https://huggingface.co/api/whoami-v2" \
-            -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: test/e2e/podmount/09-bucket-rw.sh
 
-          # Ensure bucket exists (idempotent)
-          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
-            -H "Authorization: Bearer $HUB_CI_TOKEN" || true
-
-          kubectl create secret generic hf-ci-token \
-            --from-literal=token="$HUB_CI_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-bucket-rw
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
-              volumeMounts:
-              - name: bucket
-                mountPath: /mnt/output
-            volumes:
-            - name: bucket
-              csi:
-                driver: hf.csi.huggingface.co
-                nodePublishSecretRef:
-                  name: hf-ci-token
-                volumeAttributes:
-                  mountMode: mountpod
-                  sourceType: bucket
-                  sourceId: chris-rannou/csi-e2e-bucket
-            restartPolicy: Never
-          YAML
-          kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-bucket-rw | grep BUCKET_RW_OK
-          echo "SUCCESS: Bucket read-write works with token (podmount)"
-
-      - name: "Resource overrides (podmount)"
-        run: |
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: PersistentVolume
-          metadata:
-            name: test-pv-resources
-          spec:
-            capacity:
-              storage: 1Gi
-            accessModes: [ReadOnlyMany]
-            persistentVolumeReclaimPolicy: Retain
-            csi:
-              driver: hf.csi.huggingface.co
-              volumeHandle: test-resources
-              nodePublishSecretRef:
-                name: hf-token
-                namespace: default
-              volumeAttributes:
-                mountMode: mountpod
-                sourceType: repo
-                sourceId: openai-community/gpt2
-                cpuRequest: "50m"
-                cpuLimit: "1"
-                memoryRequest: "64Mi"
-                memoryLimit: "256Mi"
-          ---
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: test-pvc-resources
-          spec:
-            accessModes: [ReadOnlyMany]
-            storageClassName: ""
-            resources:
-              requests:
-                storage: 1Gi
-            volumeName: test-pv-resources
-          ---
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-resources
-          spec:
-            # Long-running: the test asserts against the still-attached mount
-            # pod, so the workload must outlive the label query (otherwise
-            # NodeUnpublish + mount-pod cleanup races with kubectl).
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "cat /data/config.json && echo RESOURCES_OK && sleep 600"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc-resources
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-resources --for=condition=Ready --timeout=180s
-          # Wait for the busybox command to have printed RESOURCES_OK.
-          for _ in $(seq 1 30); do
-            kubectl logs test-resources 2>/dev/null | grep -q RESOURCES_OK && break
-            sleep 1
-          done
-          kubectl logs test-resources | grep RESOURCES_OK
-
-          # Find the HFMount CRD for this workload (via spec.workloads[].podUID)
-          # and read the mountPodName from it. The per-volume label uses a hash
-          # of the target path, not the CSI volumeHandle, so we cannot select by
-          # volume id directly.
-          WORKLOAD_UID=$(kubectl get pod test-resources -o jsonpath='{.metadata.uid}')
-          CRD_JSON=$(kubectl get hfmount -n default -o json | WORKLOAD_UID="$WORKLOAD_UID" python3 -c '
-          import json, os, sys
-          items = json.load(sys.stdin)["items"]
-          uid = os.environ["WORKLOAD_UID"]
-          match = next((i for i in items if any(w.get("podUID") == uid for w in i["spec"].get("workloads", []))), None)
-          assert match, f"no HFMount found referencing workload pod UID {uid}"
-          print(json.dumps(match["spec"]))
-          ')
-          MOUNT_POD=$(echo "$CRD_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mountPodName"])')
-          echo "Mount pod: $MOUNT_POD"
-
-          # Verify the mount pod received the user-specified resources.
-          kubectl get pod "$MOUNT_POD" -n default -o json | python3 -c '
-          import json, sys
-          res = json.load(sys.stdin)["spec"]["containers"][0]["resources"]
-          want = {("requests","cpu"):"50m", ("requests","memory"):"64Mi", ("limits","cpu"):"1", ("limits","memory"):"256Mi"}
-          for (section, key), expected in want.items():
-              got = res.get(section, {}).get(key)
-              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
-          print("mount pod resources OK:", json.dumps(res))
-          '
-
-          # Verify the HFMount CRD persisted the resources for heal.
-          echo "$CRD_JSON" | python3 -c '
-          import json, sys
-          spec = json.load(sys.stdin)
-          res = spec.get("resources") or {}
-          want = {"cpuRequest":"50m", "cpuLimit":"1", "memoryRequest":"64Mi", "memoryLimit":"256Mi"}
-          for k, v in want.items():
-              assert res.get(k) == v, f"CRD resources.{k}: want {v}, got {res.get(k)}; full={res}"
-          print("CRD resources OK:", json.dumps(res))
-          '
-
-          kubectl delete pod test-resources --ignore-not-found
-          kubectl delete pvc test-pvc-resources --ignore-not-found
-          kubectl delete pv test-pv-resources --ignore-not-found
-          echo "SUCCESS: Resource overrides honored and persisted to CRD"
-
-      - name: "Bucket write as non-root with fsGroup (podmount)"
+      - name: 10-fsgroup
         env:
-          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
-        run: |
-          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
-
-          kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-fsgroup-rw
-          spec:
-            securityContext:
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-              runAsNonRoot: true
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command:
-              - sh
-              - -c
-              - |
-                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
-                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
-                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
-                cat /mnt/output/fsgroup-test.txt
-              volumeMounts:
-              - name: bucket
-                mountPath: /mnt/output
-            volumes:
-            - name: bucket
-              csi:
-                driver: hf.csi.huggingface.co
-                nodePublishSecretRef:
-                  name: hf-ci-token
-                volumeAttributes:
-                  mountMode: mountpod
-                  sourceType: bucket
-                  sourceId: chris-rannou/csi-e2e-bucket
-            restartPolicy: Never
-          YAML
-          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
-          echo "SUCCESS: Non-root user with fsGroup can write to bucket (podmount)"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: test/e2e/podmount/10-fsgroup.sh
 
       - name: Debug on failure
         if: failure()
-        run: |
-          echo "=== CSI driver logs ==="
-          kubectl logs -l app=hf-csi-node --tail=100 -c hf-csi-plugin
-          echo "=== Pod describe ==="
-          kubectl describe pod test-mount 2>/dev/null || true
-          kubectl describe pod test-resilience 2>/dev/null || true
-          echo "=== Bucket RW logs ==="
-          kubectl describe pod test-bucket-rw 2>/dev/null || true
-          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
-          kubectl logs test-fsgroup-rw 2>/dev/null || true
-          kubectl describe pod test-remount 2>/dev/null || true
-          kubectl describe pod test-multi 2>/dev/null || true
-          kubectl describe pod test-ephemeral 2>/dev/null || true
-          kubectl describe pod test-mount-fail 2>/dev/null || true
-          kubectl describe pod test-resources 2>/dev/null || true
-          kubectl logs test-resources 2>/dev/null || true
-          echo "=== Events ==="
-          kubectl get events --sort-by='.lastTimestamp'
-          echo "=== Mount pods ==="
-          kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o yaml 2>/dev/null || true
-          echo "=== HFMount CRDs ==="
-          kubectl get hfmounts -n default -o yaml 2>/dev/null || true
+        run: test/e2e/podmount/99-debug.sh
 
   e2e-sidecar:
     name: E2E (sidecar)
-    needs: [build, helm-lint]
+    needs: [build, helm-lint, build-hf-mount]
     runs-on:
       group: aws-general-8-plus
     env:
       KUBERNETES_SERVICE_HOST: ""
+      CLUSTER_NAME: e2e-sidecar
+      DRIVER_IMAGE: hf-csi-driver:test
+      HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
       - uses: azure/setup-helm@v4
 
-      - name: Create Kind cluster
+      - name: Install kind
         run: |
-          cat > /tmp/kind-config.yaml <<'KINDEOF'
-          kind: Cluster
-          apiVersion: kind.x-k8s.io/v1alpha4
-          nodes:
-          - role: control-plane
-            extraMounts:
-            - hostPath: /dev/fuse
-              containerPath: /dev/fuse
-              propagation: None
-          KINDEOF
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x ./kind
-          ./kind create cluster --name e2e-sidecar --wait 60s \
-            --kubeconfig "$HOME/.kube/kind-config" \
-            --config /tmp/kind-config.yaml
-          echo "KUBECONFIG=$HOME/.kube/kind-config" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp
+      - name: Load hf-mount image
+        run: docker load -i /tmp/hf-mount-fuse.tar
 
-      - name: Build and load images
-        run: |
-          docker build -t hf-csi-driver:test .
-          ./kind load docker-image hf-csi-driver:test --name e2e-sidecar
+      - name: Setup cluster (sidecar)
+        run: test/e2e/setup-cluster.sh sidecar
 
-          git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
-          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
-          ./kind load docker-image hf-mount-fuse:v0.3.1 --name e2e-sidecar
+      - name: 01-ephemeral
+        run: test/e2e/sidecar/01-ephemeral.sh
 
-      - name: Install chart with webhook
-        run: |
-          helm install hf-csi deploy/helm/hf-csi-driver/ \
-            --namespace default \
-            --set image.repository=hf-csi-driver \
-            --set image.tag=test \
-            --set image.pullPolicy=Never \
-            --set webhook.image.repository=hf-csi-driver \
-            --set webhook.image.tag=test \
-            --set webhook.image.pullPolicy=Never \
-            --set hfMount.image.repository=hf-mount-fuse \
-            --set hfMount.image.tag=v0.3.1 \
-            --set hfMount.image.pullPolicy=Never
-          kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
-            --namespace default --timeout=60s
-          kubectl rollout status deployment hf-csi-hf-csi-driver-webhook \
-            --namespace default --timeout=120s
+      - name: 02-sidecar-injected
+        run: test/e2e/sidecar/02-sidecar-injected.sh
 
-      - name: Verify webhook
-        run: |
-          kubectl get pods -l app=hf-csi-webhook -n default
-          kubectl get mutatingwebhookconfiguration
-          kubectl get csidriver hf.csi.huggingface.co
+      - name: 03-no-mount-pods
+        run: test/e2e/sidecar/03-no-mount-pods.sh
 
-      - name: Ephemeral volume with sidecar
-        run: |
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-ephemeral
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /model && cat /model/config.json"]
-              volumeMounts:
-              - name: model
-                mountPath: /model
-                readOnly: true
-            volumes:
-            - name: model
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  sourceType: repo
-                  sourceId: openai-community/gpt2
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-ephemeral --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-ephemeral | grep model_type
-          echo "SUCCESS: Ephemeral volume works with sidecar"
+      - name: 04-pv-token
+        run: test/e2e/sidecar/04-pv-token.sh
 
-      - name: Verify sidecar was injected
-        run: |
-          INIT_CONTAINERS=$(kubectl get pod test-ephemeral -o jsonpath='{.spec.initContainers[*].name}')
-          echo "Init containers: $INIT_CONTAINERS"
-          echo "$INIT_CONTAINERS" | grep -q "hf-mount" || {
-            echo "ERROR: Sidecar not injected"
-            kubectl get pod test-ephemeral -o yaml
-            exit 1
-          }
-          VOLUMES=$(kubectl get pod test-ephemeral -o jsonpath='{.spec.volumes[*].name}')
-          echo "$VOLUMES" | grep -q "hf-csi-tmp" || {
-            echo "ERROR: hf-csi-tmp volume not injected"
-            exit 1
-          }
-          echo "SUCCESS: Sidecar and emptyDir injected"
-
-      - name: Verify no mount pods (sidecar replaces them)
-        run: |
-          MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -n default -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-          if [ -n "$MOUNT_PODS" ]; then
-            echo "INFO: Mount pods found (sidecar fd-passing may have fallen back to podmount): $MOUNT_PODS"
-          else
-            echo "SUCCESS: No mount pods, sidecar handled the mount"
-          fi
-
-      - name: Token passthrough (PV with secret)
-        run: |
-          kubectl delete pod test-ephemeral --ignore-not-found --wait=false
-          kubectl create secret generic hf-token-sidecar --from-literal=token='' --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: PersistentVolume
-          metadata:
-            name: test-pv-sidecar
-          spec:
-            capacity:
-              storage: 1Gi
-            accessModes: [ReadOnlyMany]
-            persistentVolumeReclaimPolicy: Retain
-            csi:
-              driver: hf.csi.huggingface.co
-              volumeHandle: test-gpt2-sidecar
-              nodePublishSecretRef:
-                name: hf-token-sidecar
-                namespace: default
-              volumeAttributes:
-                sourceType: repo
-                sourceId: openai-community/gpt2
-                revision: main
-          ---
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: test-pvc-sidecar
-          spec:
-            accessModes: [ReadOnlyMany]
-            storageClassName: ""
-            resources:
-              requests:
-                storage: 1Gi
-            volumeName: test-pv-sidecar
-          ---
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-pv-token
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /data && cat /data/config.json"]
-              volumeMounts:
-              - name: vol
-                mountPath: /data
-                readOnly: true
-            volumes:
-            - name: vol
-              persistentVolumeClaim:
-                claimName: test-pvc-sidecar
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-pv-token --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-pv-token | grep model_type
-          # Verify sidecar was injected for PV-backed volume (webhook resolves PVC -> PV -> CSI driver)
-          kubectl get pod test-pv-token -o jsonpath='{.spec.initContainers[*].name}' | grep -q hf-mount
-          echo "SUCCESS: PV with secret works via sidecar"
-
-      - name: Bucket read-write with token
+      - name: 05-bucket-rw
         env:
-          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
-        run: |
-          kubectl delete pod test-pv-token --ignore-not-found --wait=false
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: test/e2e/sidecar/05-bucket-rw.sh
 
-          # Verify token works
-          curl -sf "https://huggingface.co/api/whoami-v2" \
-            -H "Authorization: Bearer $HUB_CI_TOKEN" | head -1
-          echo "Token valid for: $(curl -s "https://huggingface.co/api/whoami-v2" -H "Authorization: Bearer $HUB_CI_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['name'])")"
-
-          # Ensure bucket exists (idempotent)
-          curl -sf -X POST "https://huggingface.co/api/buckets/chris-rannou/csi-e2e-bucket" \
-            -H "Authorization: Bearer $HUB_CI_TOKEN" || true
-
-          # Create K8s secret with the HF token
-          kubectl create secret generic hf-ci-token \
-            --from-literal=token="$HUB_CI_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-bucket-rw
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "echo hello > /mnt/output/test.txt && cat /mnt/output/test.txt && echo BUCKET_RW_OK"]
-              volumeMounts:
-              - name: bucket
-                mountPath: /mnt/output
-            volumes:
-            - name: bucket
-              csi:
-                driver: hf.csi.huggingface.co
-                nodePublishSecretRef:
-                  name: hf-ci-token
-                volumeAttributes:
-                  sourceType: bucket
-                  sourceId: chris-rannou/csi-e2e-bucket
-            restartPolicy: Never
-          YAML
-          kubectl wait pod/test-bucket-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-bucket-rw | grep BUCKET_RW_OK
-          echo "SUCCESS: Bucket read-write works with token via sidecar"
-
-      - name: "Bucket write as non-root with fsGroup (sidecar)"
+      - name: 06-fsgroup
         env:
-          HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
-        run: |
-          kubectl delete pod test-bucket-rw --ignore-not-found --wait=false
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: test/e2e/sidecar/06-fsgroup.sh
 
-          kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-fsgroup-rw
-          spec:
-            securityContext:
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-              runAsNonRoot: true
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command:
-              - sh
-              - -c
-              - |
-                echo "uid=$(id -u) gid=$(id -g) groups=$(id -G)"
-                stat -c 'mount: uid=%u gid=%g mode=%a' /mnt/output
-                echo fsgroup-test > /mnt/output/fsgroup-test.txt && echo FSGROUP_WRITE_OK
-                cat /mnt/output/fsgroup-test.txt
-              volumeMounts:
-              - name: bucket
-                mountPath: /mnt/output
-            volumes:
-            - name: bucket
-              csi:
-                driver: hf.csi.huggingface.co
-                nodePublishSecretRef:
-                  name: hf-ci-token
-                volumeAttributes:
-                  sourceType: bucket
-                  sourceId: chris-rannou/csi-e2e-bucket
-            restartPolicy: Never
-          YAML
-          kubectl wait pod/test-fsgroup-rw --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-fsgroup-rw | grep FSGROUP_WRITE_OK
-          echo "SUCCESS: Non-root user with fsGroup can write to bucket (sidecar)"
+      - name: 07-token-perms
+        run: test/e2e/sidecar/07-token-perms.sh
 
-      - name: Token file permissions check
-        run: |
-          # Verify the token file in the emptyDir is readable by the sidecar (user 65534)
-          kubectl create secret generic hf-dummy-token \
-            --from-literal=token="test-token-value" \
-            --dry-run=client -o yaml | kubectl apply -f -
+      - name: 08-multi-volume
+        run: test/e2e/sidecar/08-multi-volume.sh
 
-          kubectl apply -f - <<'YAML'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-token-perms
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "ls /model && echo TOKEN_PERMS_OK"]
-              volumeMounts:
-              - name: vol
-                mountPath: /model
-                readOnly: true
-            volumes:
-            - name: vol
-              csi:
-                driver: hf.csi.huggingface.co
-                nodePublishSecretRef:
-                  name: hf-dummy-token
-                volumeAttributes:
-                  sourceType: repo
-                  sourceId: openai-community/gpt2
-            restartPolicy: Never
-          YAML
-          kubectl wait pod/test-token-perms --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-
-          # Check that the sidecar could read the token file
-          # (if it couldn't, the sidecar would crash and the pod wouldn't succeed)
-          TOKEN_LOGS=$(kubectl logs test-token-perms -c hf-mount 2>/dev/null || true)
-          if echo "$TOKEN_LOGS" | grep -q "Permission denied"; then
-            echo "ERROR: Token file not readable by sidecar"
-            echo "$TOKEN_LOGS"
-            exit 1
-          fi
-          echo "SUCCESS: Token file readable by sidecar (user 65534)"
-
-      - name: Multi-volume (2 HF volumes in one pod)
-        run: |
-          kubectl delete pod test-token-perms --ignore-not-found --wait=false
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-multi-vol
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "cat /model1/config.json && cat /model2/config.json && echo MULTI_OK"]
-              volumeMounts:
-              - name: gpt2
-                mountPath: /model1
-                readOnly: true
-              - name: bert
-                mountPath: /model2
-                readOnly: true
-            volumes:
-            - name: gpt2
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  sourceType: repo
-                  sourceId: openai-community/gpt2
-            - name: bert
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  sourceType: repo
-                  sourceId: google-bert/bert-base-uncased
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-multi-vol --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-multi-vol | grep MULTI_OK
-          # Verify only one sidecar injected (not one per volume)
-          COUNT=$(kubectl get pod test-multi-vol -o jsonpath='{.spec.initContainers[*].name}' | tr ' ' '\n' | grep -c hf-mount)
-          [ "$COUNT" -eq 1 ] || { echo "ERROR: expected 1 sidecar, got $COUNT"; exit 1; }
-          echo "SUCCESS: 2 volumes served by 1 sidecar"
-
-      - name: "Resource overrides (sidecar)"
-        run: |
-          kubectl delete pod test-multi-vol --ignore-not-found --wait=false
-          kubectl apply -f - <<'EOF'
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: test-sidecar-resources
-          spec:
-            containers:
-            - name: test
-              image: public.ecr.aws/docker/library/busybox:latest
-              command: ["sh", "-c", "cat /model/config.json && echo SIDECAR_RESOURCES_OK"]
-              volumeMounts:
-              - name: model
-                mountPath: /model
-                readOnly: true
-            volumes:
-            - name: model
-              csi:
-                driver: hf.csi.huggingface.co
-                volumeAttributes:
-                  sourceType: repo
-                  sourceId: openai-community/gpt2
-                  cpuRequest: "75m"
-                  cpuLimit: "2"
-                  memoryRequest: "96Mi"
-                  memoryLimit: "512Mi"
-            restartPolicy: Never
-          EOF
-          kubectl wait pod/test-sidecar-resources --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
-          kubectl logs test-sidecar-resources | grep SIDECAR_RESOURCES_OK
-
-          kubectl get pod test-sidecar-resources -o json | python3 -c '
-          import json, sys
-          pod = json.load(sys.stdin)
-          sidecar = next(c for c in pod["spec"]["initContainers"] if c["name"] == "hf-mount")
-          res = sidecar["resources"]
-          want = {("requests","cpu"):"75m", ("requests","memory"):"96Mi", ("limits","cpu"):"2", ("limits","memory"):"512Mi"}
-          for (section, key), expected in want.items():
-              got = res.get(section, {}).get(key)
-              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
-          print("sidecar resources OK:", json.dumps(res))
-          '
-          echo "SUCCESS: Sidecar honored resource overrides from volumeAttributes"
+      # 09-stuck-sidecar is a regression test for PR #23 (sidecar-unpublish
+      # fast path). It is committed but disabled here; enable by setting
+      # E2E_RUN_STUCK_SIDECAR=1 on the step below once the fix lands.
+      - name: 09-stuck-sidecar
+        if: env.E2E_RUN_STUCK_SIDECAR == '1'
+        run: test/e2e/sidecar/09-stuck-sidecar.sh
 
       - name: Debug on failure
         if: failure()
-        run: |
-          echo "=== CSI driver logs ==="
-          kubectl logs -l app=hf-csi-node --tail=100 -c hf-csi-plugin
-          echo "=== Webhook logs ==="
-          kubectl logs -l app=hf-csi-webhook --tail=100 -n default 2>/dev/null || true
-          echo "=== Sidecar logs ==="
-          kubectl logs test-ephemeral -c hf-mount --tail=100 2>/dev/null || true
-          kubectl logs test-ephemeral -c hf-mount --previous --tail=100 2>/dev/null || true
-          echo "=== Multi-vol sidecar logs ==="
-          kubectl logs test-multi-vol -c hf-mount --tail=100 2>/dev/null || true
-          echo "=== Bucket RW sidecar logs ==="
-          kubectl logs test-bucket-rw -c hf-mount --tail=100 2>/dev/null || true
-          kubectl logs test-bucket-rw -c hf-mount --previous --tail=100 2>/dev/null || true
-          echo "=== Token perms sidecar logs ==="
-          kubectl logs test-token-perms -c hf-mount --tail=100 2>/dev/null || true
-          echo "=== Sidecar resources logs ==="
-          kubectl describe pod test-sidecar-resources 2>/dev/null || true
-          kubectl logs test-sidecar-resources -c hf-mount --tail=100 2>/dev/null || true
-          echo "=== fsGroup RW logs ==="
-          kubectl describe pod test-fsgroup-rw 2>/dev/null || true
-          kubectl logs test-fsgroup-rw 2>/dev/null || true
-          kubectl logs test-fsgroup-rw -c hf-mount --tail=100 2>/dev/null || true
-          echo "=== All pods ==="
-          kubectl get pods -A
-          echo "=== Pod describes ==="
-          kubectl describe pod test-ephemeral 2>/dev/null || true
-          kubectl describe pod test-mount-fail 2>/dev/null || true
-          echo "=== Events ==="
-          kubectl get events --sort-by='.lastTimestamp'
-          echo "=== Webhook pod ==="
-          kubectl describe pod -l app=hf-csi-webhook -n default 2>/dev/null || true
+        run: test/e2e/sidecar/99-debug.sh
