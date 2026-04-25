@@ -23,17 +23,17 @@ import (
 )
 
 const (
-	mountPodPrefix   = "hf-mount-"
-	labelApp         = "hf.csi.huggingface.co/app"
-	labelAppValue    = "hf-mount"
-	labelVolumeID    = "hf.csi.huggingface.co/volume-id"
-	labelNode        = "hf.csi.huggingface.co/node"
-	annotSourceType  = "hf.csi.huggingface.co/source-type"
-	annotSourceID    = "hf.csi.huggingface.co/source-id"
-	annotMountPath   = "hf.csi.huggingface.co/mount-path"
-	mountBaseDir     = "/var/lib/hf-csi-driver/mnt"
-	podReadyTimeout  = 2 * time.Minute
-	podReadyPoll     = time.Second
+	mountPodPrefix     = "hf-mount-"
+	labelApp           = "hf.csi.huggingface.co/app"
+	labelAppValue      = "hf-mount"
+	labelVolumeID      = "hf.csi.huggingface.co/volume-id"
+	labelNode          = "hf.csi.huggingface.co/node"
+	annotSourceType    = "hf.csi.huggingface.co/source-type"
+	annotSourceID      = "hf.csi.huggingface.co/source-id"
+	annotMountPath     = "hf.csi.huggingface.co/mount-path"
+	mountBaseDir       = "/var/lib/hf-csi-driver/mnt"
+	podReadyTimeout    = 2 * time.Minute
+	podReadyPoll       = time.Second
 	mountReadyPollPM   = 500 * time.Millisecond
 	mountTimeoutPM     = 60 * time.Second
 	podDeletionTimeout = 60 * time.Second
@@ -86,14 +86,14 @@ func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, nam
 		image:            image,
 		imagePullPolicy:  pullPolicy,
 		imagePullSecrets: pullSecrets,
-		serviceAccount:  serviceAccount,
-		cacheDir:        cacheDir,
-		hostNetwork:     hostNetwork,
-		checker:         checker,
-		crd:             newHFMountClient(dynClient, namespace),
-		binds:           make(map[string]string),
-		sourceLocks:     make(map[string]*refMutex),
-		getMountRefs:    checker.GetMountRefs,
+		serviceAccount:   serviceAccount,
+		cacheDir:         cacheDir,
+		hostNetwork:      hostNetwork,
+		checker:          checker,
+		crd:              newHFMountClient(dynClient, namespace),
+		binds:            make(map[string]string),
+		sourceLocks:      make(map[string]*refMutex),
+		getMountRefs:     checker.GetMountRefs,
 	}
 }
 

@@ -14,6 +14,17 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// sidecarVolumes tracks target paths that were published via sidecar mode.
+// NodeUnpublishVolume checks this to decide whether to use the non-blocking
+// sidecar fast path (fuseUnmount) or the PodMounter path.
+//
+// Entries are added in NodePublishVolume (sidecar branch) and removed in
+// NodeUnpublishVolume. The map is in-memory only: after a CSI driver restart
+// it is empty and unpublish for sidecar-published volumes falls through to
+// the PodMounter path (which may block on a stale FUSE mount until the
+// driver pod is restarted again).
+var sidecarVolumes sync.Map // target (string) -> struct{}
+
 const (
 	DriverName = "hf.csi.huggingface.co"
 )
@@ -27,13 +38,14 @@ type Driver struct {
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
 
-	endpoint  string
-	nodeID    string
-	cacheBase string
-	srv       *grpc.Server
-	mounter   Mounter
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	endpoint      string
+	nodeID        string
+	cacheBase     string
+	srv           *grpc.Server
+	mounter       Mounter
+	fuseUnmountFn func(string) error
+	stopCh        chan struct{}
+	stopOnce      sync.Once
 }
 
 func NewDriver(endpoint, nodeID, cacheBase string, mounter Mounter) *Driver {
@@ -41,11 +53,12 @@ func NewDriver(endpoint, nodeID, cacheBase string, mounter Mounter) *Driver {
 		cacheBase = DefaultCacheBase
 	}
 	return &Driver{
-		endpoint:  endpoint,
-		nodeID:    nodeID,
-		cacheBase: cacheBase,
-		mounter:   mounter,
-		stopCh:    make(chan struct{}),
+		endpoint:      endpoint,
+		nodeID:        nodeID,
+		cacheBase:     cacheBase,
+		mounter:       mounter,
+		fuseUnmountFn: fuseUnmount,
+		stopCh:        make(chan struct{}),
 	}
 }
 
