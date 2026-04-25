@@ -12,7 +12,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
@@ -573,6 +572,11 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 	sourceType, _ := spec["sourceType"].(string)
 	sourceID, _ := spec["sourceID"].(string)
 
+	var resources MountResources
+	if rawRes, ok := spec["resources"].(map[string]interface{}); ok {
+		resources = MountResourcesFromUnstructured(rawRes)
+	}
+
 	klog.Infof("tryHealSource: recreating mount pod %s from CRD %s", podName, crdName)
 
 	// Delete the stale pod if it still exists.
@@ -584,7 +588,7 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 		}
 	}
 
-	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
+	newPod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, resources)
 	if _, createErr := m.client.CoreV1().Pods(m.namespace).Create(ctx, newPod, metav1.CreateOptions{}); createErr != nil {
 		klog.Warningf("tryHealSource: failed to recreate pod %s: %v", podName, createErr)
 		return
@@ -677,7 +681,15 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	// Create HFMount CRD. This is the source of truth for mount args, required
 	// for pod recreation on failure. Mount must fail if CRD cannot be persisted.
 	crdName := hfMountName(volumeID)
-	if crdErr := m.crd.create(ctx, crdName, m.nodeID, sourceType, sourceID, podName, mountPath, args); crdErr != nil {
+	if crdErr := m.crd.create(ctx, crdName, hfMountSpec{
+		NodeName:     m.nodeID,
+		SourceType:   sourceType,
+		SourceID:     sourceID,
+		MountPodName: podName,
+		MountPath:    mountPath,
+		MountArgs:    args,
+		Resources:    opts.Resources,
+	}); crdErr != nil {
 		if !errors.IsAlreadyExists(crdErr) {
 			return fmt.Errorf("failed to create HFMount CRD %s: %w", crdName, crdErr)
 		}
@@ -700,7 +712,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		}
 	}()
 
-	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args)
+	pod := m.buildMountPod(podName, volumeID, sourceType, sourceID, mountPath, args, opts.Resources)
 	klog.Infof("Creating mount pod %s for %s %s", podName, sourceType, sourceID)
 	if _, err := m.client.CoreV1().Pods(m.namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
 		if errors.IsAlreadyExists(err) {
@@ -1035,7 +1047,7 @@ func (m *PodMounter) recoverPod(ctx context.Context, pod *corev1.Pod) {
 	go m.rebindTargets(mountPath)
 }
 
-func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string) *corev1.Pod {
+func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPath string, args []string, resources MountResources) *corev1.Pod {
 	bidirectional := corev1.MountPropagationBidirectional
 
 	return &corev1.Pod{
@@ -1102,12 +1114,7 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 						MountPath: m.cacheDir,
 					},
 				},
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("10m"),
-						corev1.ResourceMemory: resource.MustParse("32Mi"),
-					},
-				},
+				Resources: BuildResourceRequirements(resources, DefaultMountCPURequest, DefaultMountMemoryRequest),
 			}},
 			Volumes: []corev1.Volume{
 				{

@@ -519,6 +519,118 @@ jobs:
           kubectl logs test-bucket-rw | grep BUCKET_RW_OK
           echo "SUCCESS: Bucket read-write works with token (podmount)"
 
+      - name: "Resource overrides (podmount)"
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: test-pv-resources
+          spec:
+            capacity:
+              storage: 1Gi
+            accessModes: [ReadOnlyMany]
+            persistentVolumeReclaimPolicy: Retain
+            csi:
+              driver: hf.csi.huggingface.co
+              volumeHandle: test-resources
+              nodePublishSecretRef:
+                name: hf-token
+                namespace: default
+              volumeAttributes:
+                mountMode: mountpod
+                sourceType: repo
+                sourceId: openai-community/gpt2
+                cpuRequest: "50m"
+                cpuLimit: "1"
+                memoryRequest: "64Mi"
+                memoryLimit: "256Mi"
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: test-pvc-resources
+          spec:
+            accessModes: [ReadOnlyMany]
+            storageClassName: ""
+            resources:
+              requests:
+                storage: 1Gi
+            volumeName: test-pv-resources
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-resources
+          spec:
+            # Long-running: the test asserts against the still-attached mount
+            # pod, so the workload must outlive the label query (otherwise
+            # NodeUnpublish + mount-pod cleanup races with kubectl).
+            containers:
+            - name: test
+              image: public.ecr.aws/docker/library/busybox:latest
+              command: ["sh", "-c", "cat /data/config.json && echo RESOURCES_OK && sleep 600"]
+              volumeMounts:
+              - name: vol
+                mountPath: /data
+                readOnly: true
+            volumes:
+            - name: vol
+              persistentVolumeClaim:
+                claimName: test-pvc-resources
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-resources --for=condition=Ready --timeout=180s
+          # Wait for the busybox command to have printed RESOURCES_OK.
+          for _ in $(seq 1 30); do
+            kubectl logs test-resources 2>/dev/null | grep -q RESOURCES_OK && break
+            sleep 1
+          done
+          kubectl logs test-resources | grep RESOURCES_OK
+
+          # Find the HFMount CRD for this workload (via spec.workloads[].podUID)
+          # and read the mountPodName from it. The per-volume label uses a hash
+          # of the target path, not the CSI volumeHandle, so we cannot select by
+          # volume id directly.
+          WORKLOAD_UID=$(kubectl get pod test-resources -o jsonpath='{.metadata.uid}')
+          CRD_JSON=$(kubectl get hfmount -n default -o json | WORKLOAD_UID="$WORKLOAD_UID" python3 -c '
+          import json, os, sys
+          items = json.load(sys.stdin)["items"]
+          uid = os.environ["WORKLOAD_UID"]
+          match = next((i for i in items if any(w.get("podUID") == uid for w in i["spec"].get("workloads", []))), None)
+          assert match, f"no HFMount found referencing workload pod UID {uid}"
+          print(json.dumps(match["spec"]))
+          ')
+          MOUNT_POD=$(echo "$CRD_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mountPodName"])')
+          echo "Mount pod: $MOUNT_POD"
+
+          # Verify the mount pod received the user-specified resources.
+          kubectl get pod "$MOUNT_POD" -n default -o json | python3 -c '
+          import json, sys
+          res = json.load(sys.stdin)["spec"]["containers"][0]["resources"]
+          want = {("requests","cpu"):"50m", ("requests","memory"):"64Mi", ("limits","cpu"):"1", ("limits","memory"):"256Mi"}
+          for (section, key), expected in want.items():
+              got = res.get(section, {}).get(key)
+              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
+          print("mount pod resources OK:", json.dumps(res))
+          '
+
+          # Verify the HFMount CRD persisted the resources for heal.
+          echo "$CRD_JSON" | python3 -c '
+          import json, sys
+          spec = json.load(sys.stdin)
+          res = spec.get("resources") or {}
+          want = {"cpuRequest":"50m", "cpuLimit":"1", "memoryRequest":"64Mi", "memoryLimit":"256Mi"}
+          for k, v in want.items():
+              assert res.get(k) == v, f"CRD resources.{k}: want {v}, got {res.get(k)}; full={res}"
+          print("CRD resources OK:", json.dumps(res))
+          '
+
+          kubectl delete pod test-resources --ignore-not-found
+          kubectl delete pvc test-pvc-resources --ignore-not-found
+          kubectl delete pv test-pv-resources --ignore-not-found
+          echo "SUCCESS: Resource overrides honored and persisted to CRD"
+
       - name: "Bucket write as non-root with fsGroup (podmount)"
         env:
           HUB_CI_TOKEN: ${{ secrets.HUB_CI_TOKEN }}
@@ -582,6 +694,8 @@ jobs:
           kubectl describe pod test-multi 2>/dev/null || true
           kubectl describe pod test-ephemeral 2>/dev/null || true
           kubectl describe pod test-mount-fail 2>/dev/null || true
+          kubectl describe pod test-resources 2>/dev/null || true
+          kubectl logs test-resources 2>/dev/null || true
           echo "=== Events ==="
           kubectl get events --sort-by='.lastTimestamp'
           echo "=== Mount pods ==="
@@ -952,6 +1066,52 @@ jobs:
           [ "$COUNT" -eq 1 ] || { echo "ERROR: expected 1 sidecar, got $COUNT"; exit 1; }
           echo "SUCCESS: 2 volumes served by 1 sidecar"
 
+      - name: "Resource overrides (sidecar)"
+        run: |
+          kubectl delete pod test-multi-vol --ignore-not-found --wait=false
+          kubectl apply -f - <<'EOF'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: test-sidecar-resources
+          spec:
+            containers:
+            - name: test
+              image: public.ecr.aws/docker/library/busybox:latest
+              command: ["sh", "-c", "cat /model/config.json && echo SIDECAR_RESOURCES_OK"]
+              volumeMounts:
+              - name: model
+                mountPath: /model
+                readOnly: true
+            volumes:
+            - name: model
+              csi:
+                driver: hf.csi.huggingface.co
+                volumeAttributes:
+                  sourceType: repo
+                  sourceId: openai-community/gpt2
+                  cpuRequest: "75m"
+                  cpuLimit: "2"
+                  memoryRequest: "96Mi"
+                  memoryLimit: "512Mi"
+            restartPolicy: Never
+          EOF
+          kubectl wait pod/test-sidecar-resources --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s
+          kubectl logs test-sidecar-resources | grep SIDECAR_RESOURCES_OK
+
+          kubectl get pod test-sidecar-resources -o json | python3 -c '
+          import json, sys
+          pod = json.load(sys.stdin)
+          sidecar = next(c for c in pod["spec"]["initContainers"] if c["name"] == "hf-mount")
+          res = sidecar["resources"]
+          want = {("requests","cpu"):"75m", ("requests","memory"):"96Mi", ("limits","cpu"):"2", ("limits","memory"):"512Mi"}
+          for (section, key), expected in want.items():
+              got = res.get(section, {}).get(key)
+              assert got == expected, f"{section}.{key}: want {expected}, got {got}; full={res}"
+          print("sidecar resources OK:", json.dumps(res))
+          '
+          echo "SUCCESS: Sidecar honored resource overrides from volumeAttributes"
+
       - name: Debug on failure
         if: failure()
         run: |
@@ -969,6 +1129,9 @@ jobs:
           kubectl logs test-bucket-rw -c hf-mount --previous --tail=100 2>/dev/null || true
           echo "=== Token perms sidecar logs ==="
           kubectl logs test-token-perms -c hf-mount --tail=100 2>/dev/null || true
+          echo "=== Sidecar resources logs ==="
+          kubectl describe pod test-sidecar-resources 2>/dev/null || true
+          kubectl logs test-sidecar-resources -c hf-mount --tail=100 2>/dev/null || true
           echo "=== fsGroup RW logs ==="
           kubectl describe pod test-fsgroup-rw 2>/dev/null || true
           kubectl logs test-fsgroup-rw 2>/dev/null || true

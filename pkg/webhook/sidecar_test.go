@@ -5,6 +5,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/huggingface/hf-buckets-csi-driver/pkg/driver"
 )
 
 // quantityPtr is a small helper to get a *resource.Quantity from a literal.
@@ -13,8 +15,12 @@ func quantityPtr(s string) *resource.Quantity {
 	return &q
 }
 
+func buildFromOverrides(overrides driver.MountResources) corev1.ResourceRequirements {
+	return driver.BuildResourceRequirements(overrides, driver.DefaultMountCPURequest, driver.DefaultMountMemoryRequest)
+}
+
 func TestBuildSidecarResources_Defaults(t *testing.T) {
-	r := buildSidecarResources(sidecarResources{})
+	r := buildFromOverrides(driver.MountResources{})
 
 	if got, want := r.Requests[corev1.ResourceCPU], resource.MustParse("10m"); got.Cmp(want) != 0 {
 		t.Fatalf("default cpu request: got %s, want %s", got.String(), want.String())
@@ -28,7 +34,7 @@ func TestBuildSidecarResources_Defaults(t *testing.T) {
 }
 
 func TestBuildSidecarResources_Overrides(t *testing.T) {
-	r := buildSidecarResources(sidecarResources{
+	r := buildFromOverrides(driver.MountResources{
 		CPURequest:    quantityPtr("250m"),
 		MemoryRequest: quantityPtr("128Mi"),
 		CPULimit:      quantityPtr("1"),
@@ -50,10 +56,10 @@ func TestBuildSidecarResources_Overrides(t *testing.T) {
 }
 
 // A typo should not prevent pod admission: invalid quantity strings are
-// dropped at parse time (resourcesFromVolumeAttrs) and the field stays nil,
-// so buildSidecarResources falls back to the default.
+// dropped at parse time (driver.ParseMountResources) and the field stays nil,
+// so the builder falls back to the default.
 func TestResourcesFromVolumeAttrs_InvalidQuantityDropped(t *testing.T) {
-	r := resourcesFromVolumeAttrs(map[string]string{
+	r := driver.ParseMountResources(map[string]string{
 		"memoryLimit":   "not-a-quantity",
 		"memoryRequest": "64Mi",
 	})
@@ -71,14 +77,14 @@ func TestResourcesFromVolumeAttrs_InvalidQuantityDropped(t *testing.T) {
 // raw strings and the invalid (but non-empty) first value won, only to be
 // dropped at parse time, leaving the sidecar unbounded.
 func TestResourcesMergeMax_InvalidDoesNotShadowValid(t *testing.T) {
-	a := resourcesFromVolumeAttrs(map[string]string{
+	a := driver.ParseMountResources(map[string]string{
 		"memoryLimit": "not-a-quantity", // parses to nil
 	})
-	b := resourcesFromVolumeAttrs(map[string]string{
+	b := driver.ParseMountResources(map[string]string{
 		"memoryLimit": "2Gi",
 	})
 
-	a.mergeMax(b)
+	mergeMaxResources(&a, b)
 
 	if a.MemoryLimit == nil || a.MemoryLimit.Cmp(resource.MustParse("2Gi")) != 0 {
 		t.Fatalf("want merged memoryLimit=2Gi, got %v", a.MemoryLimit)
@@ -87,13 +93,13 @@ func TestResourcesMergeMax_InvalidDoesNotShadowValid(t *testing.T) {
 
 // mergeMax must be order-independent and pick the larger value per field.
 func TestResourcesMergeMax_TakesMaxAndIsOrderIndependent(t *testing.T) {
-	a1 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "2Gi"})
-	b1 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "4Gi"})
-	a1.mergeMax(b1)
+	a1 := driver.ParseMountResources(map[string]string{"memoryLimit": "2Gi"})
+	b1 := driver.ParseMountResources(map[string]string{"memoryLimit": "4Gi"})
+	mergeMaxResources(&a1, b1)
 
-	a2 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "4Gi"})
-	b2 := resourcesFromVolumeAttrs(map[string]string{"memoryLimit": "2Gi"})
-	a2.mergeMax(b2)
+	a2 := driver.ParseMountResources(map[string]string{"memoryLimit": "4Gi"})
+	b2 := driver.ParseMountResources(map[string]string{"memoryLimit": "2Gi"})
+	mergeMaxResources(&a2, b2)
 
 	want := resource.MustParse("4Gi")
 	if a1.MemoryLimit.Cmp(want) != 0 {
@@ -109,7 +115,7 @@ func TestResourcesMergeMax_TakesMaxAndIsOrderIndependent(t *testing.T) {
 // to the limit and log a warning.
 func TestBuildSidecarResources_RequestClampedToLimit(t *testing.T) {
 	// memoryLimit: 16Mi is smaller than the default 32Mi request.
-	r := buildSidecarResources(sidecarResources{
+	r := buildFromOverrides(driver.MountResources{
 		MemoryLimit: quantityPtr("16Mi"),
 	})
 
@@ -126,7 +132,7 @@ func TestBuildSidecarResources_RequestClampedToLimit(t *testing.T) {
 // Clamp also applies when both request and limit are user-supplied but
 // request > limit (e.g. mergeMax pulled each from different volumes).
 func TestBuildSidecarResources_ClampUserProvidedRequestAboveLimit(t *testing.T) {
-	r := buildSidecarResources(sidecarResources{
+	r := buildFromOverrides(driver.MountResources{
 		MemoryRequest: quantityPtr("512Mi"),
 		MemoryLimit:   quantityPtr("256Mi"),
 	})
@@ -143,7 +149,7 @@ func TestBuildSidecarResources_ClampUserProvidedRequestAboveLimit(t *testing.T) 
 
 // Nil VolumeAttributes (possible on malformed PVs) must not panic.
 func TestResourcesFromVolumeAttrs_NilMap(t *testing.T) {
-	r := resourcesFromVolumeAttrs(nil)
+	r := driver.ParseMountResources(nil)
 	if r.MemoryLimit != nil || r.MemoryRequest != nil || r.CPULimit != nil || r.CPURequest != nil {
 		t.Fatalf("nil attrs must yield all-nil resources, got %#v", r)
 	}

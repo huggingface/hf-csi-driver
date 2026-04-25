@@ -24,6 +24,7 @@ type MountOptions struct {
 	TokenFile          string   // path to a file where the token is written for live refresh
 	WorkloadPodUID     string   // UID of the workload pod consuming this volume
 	VolumeMountGroup   string   // fsGroup from pod security context, passed via CSI VOLUME_MOUNT_GROUP
+	Resources          MountResources // per-volume CPU/memory overrides from volumeAttributes
 }
 
 type Mounter interface {

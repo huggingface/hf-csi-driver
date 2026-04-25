@@ -44,6 +44,18 @@ spec:
                   description: CLI arguments used to create the mount pod, enabling pod recreation on failure.
                   items:
                     type: string
+                resources:
+                  type: object
+                  description: Resource overrides captured from volumeAttributes, preserved across mount pod recreations.
+                  properties:
+                    cpuLimit:
+                      type: string
+                    cpuRequest:
+                      type: string
+                    memoryLimit:
+                      type: string
+                    memoryRequest:
+                      type: string
                 workloads:
                   type: array
                   description: Workload pods consuming this mount, with pod UID and attachment time.

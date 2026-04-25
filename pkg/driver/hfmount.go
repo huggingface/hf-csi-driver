@@ -33,11 +33,35 @@ func (c *hfMountClient) resource() dynamic.ResourceInterface {
 	return c.client.Resource(hfMountGVR).Namespace(c.namespace)
 }
 
+// hfMountSpec is the typed payload for creating an HFMount CR.
+type hfMountSpec struct {
+	NodeName     string
+	SourceType   string
+	SourceID     string
+	MountPodName string
+	MountPath    string
+	MountArgs    []string
+	Resources    MountResources
+}
+
 // create creates an HFMount CR for a given mount operation.
-func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, sourceID, mountPodName, mountPath string, mountArgs []string) error {
-	argsIface := make([]interface{}, len(mountArgs))
-	for i, a := range mountArgs {
+func (c *hfMountClient) create(ctx context.Context, name string, s hfMountSpec) error {
+	argsIface := make([]interface{}, len(s.MountArgs))
+	for i, a := range s.MountArgs {
 		argsIface[i] = a
+	}
+
+	spec := map[string]interface{}{
+		"nodeName":     s.NodeName,
+		"sourceType":   s.SourceType,
+		"sourceID":     s.SourceID,
+		"mountPodName": s.MountPodName,
+		"mountPath":    s.MountPath,
+		"mountArgs":    argsIface,
+		"workloads":    []interface{}{},
+	}
+	if res := s.Resources.ToUnstructured(); res != nil {
+		spec["resources"] = res
 	}
 
 	obj := &unstructured.Unstructured{
@@ -48,18 +72,10 @@ func (c *hfMountClient) create(ctx context.Context, name, nodeName, sourceType, 
 				"name":      name,
 				"namespace": c.namespace,
 				"labels": map[string]interface{}{
-					labelNode: sanitizeLabelValue(nodeName),
+					labelNode: sanitizeLabelValue(s.NodeName),
 				},
 			},
-			"spec": map[string]interface{}{
-				"nodeName":     nodeName,
-				"sourceType":   sourceType,
-				"sourceID":     sourceID,
-				"mountPodName": mountPodName,
-				"mountPath":    mountPath,
-				"mountArgs":    argsIface,
-				"workloads":    []interface{}{},
-			},
+			"spec": spec,
 		},
 	}
 
