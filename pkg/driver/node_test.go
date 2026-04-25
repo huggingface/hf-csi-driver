@@ -12,7 +12,6 @@ import (
 // mockMounter implements Mounter for testing.
 type mockMounter struct {
 	mounted  map[string]bool
-	tracked  map[string]bool // separate from mounted to model post-restart state
 	lastOpts MountOptions
 
 	// Call counters for verifying routing.
@@ -21,15 +20,11 @@ type mockMounter struct {
 }
 
 func newMockMounter() *mockMounter {
-	return &mockMounter{
-		mounted: make(map[string]bool),
-		tracked: make(map[string]bool),
-	}
+	return &mockMounter{mounted: make(map[string]bool)}
 }
 
 func (m *mockMounter) Mount(sourceType, sourceID, target string, opts MountOptions) error {
 	m.mounted[target] = true
-	m.tracked[target] = true
 	m.lastOpts = opts
 	return nil
 }
@@ -37,7 +32,6 @@ func (m *mockMounter) Mount(sourceType, sourceID, target string, opts MountOptio
 func (m *mockMounter) Unmount(target string) error {
 	m.unmountCalls++
 	delete(m.mounted, target)
-	delete(m.tracked, target)
 	_ = os.Remove(target)
 	return nil
 }
@@ -54,15 +48,26 @@ func (m *mockMounter) CheckHealth(_ string) error {
 	return nil
 }
 
-func (m *mockMounter) IsTracked(target string) bool {
-	return m.tracked[target]
-}
-
 func (m *mockMounter) Recover() error {
 	return nil
 }
 
 func (m *mockMounter) Start(_ <-chan struct{}) {}
+
+// newSidecarTestDriver builds a Driver with a counting fuseUnmountFn for the
+// sidecar fast-path tests. Returns the driver, the mock mounter, and a pointer
+// to the counter so the caller can assert call counts.
+func newSidecarTestDriver(t *testing.T) (*Driver, *mockMounter, *int) {
+	t.Helper()
+	mock := newMockMounter()
+	calls := 0
+	d := &Driver{
+		mounter:       mock,
+		cacheBase:     t.TempDir(),
+		fuseUnmountFn: func(string) error { calls++; return nil },
+	}
+	return d, mock, &calls
+}
 
 func TestNodePublishVolume_MissingFields(t *testing.T) {
 	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir()}
@@ -488,135 +493,72 @@ func TestNodeUnpublishVolume_Success(t *testing.T) {
 
 func TestNodeUnpublishVolume_SidecarTracked(t *testing.T) {
 	// When a volume was published via sidecar (tracked in sidecarVolumes),
-	// NodeUnpublishVolume should use the fast path: fuseUnmount + os.Remove,
+	// NodeUnpublishVolume uses the fast path: fuseUnmount + os.Remove,
 	// without calling PodMounter.IsMountPoint or PodMounter.Unmount.
-	mock := newMockMounter()
-	var fuseUnmountCalls int
-	d := &Driver{mounter: mock, cacheBase: t.TempDir(), fuseUnmountFn: func(string) error { fuseUnmountCalls++; return nil }}
-
+	d, mock, fuseUnmountCalls := newSidecarTestDriver(t)
 	target := filepath.Join(t.TempDir(), "target")
 	_ = os.MkdirAll(target, 0750)
-
-	// Simulate NodePublishVolume having registered this as a sidecar volume.
 	sidecarVolumes.Store(target, struct{}{})
 	defer sidecarVolumes.Delete(target)
 
-	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+	if _, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
 		VolumeId:   "vol1",
 		TargetPath: target,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	// The tracking entry should be removed.
 	if _, ok := sidecarVolumes.Load(target); ok {
 		t.Error("expected sidecar tracking entry to be removed")
 	}
-	// The target directory should be removed.
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Error("expected target directory to be removed")
 	}
-	// The fast path must call fuseUnmount and bypass PodMounter entirely.
-	if fuseUnmountCalls != 1 {
-		t.Errorf("expected fuseUnmount to be called once, got %d", fuseUnmountCalls)
+	if *fuseUnmountCalls != 1 {
+		t.Errorf("expected fuseUnmount to be called once, got %d", *fuseUnmountCalls)
 	}
-	if mock.isMountPointCalls != 0 {
-		t.Errorf("expected IsMountPoint not to be called, got %d calls", mock.isMountPointCalls)
-	}
-	if mock.unmountCalls != 0 {
-		t.Errorf("expected Unmount not to be called, got %d calls", mock.unmountCalls)
+	if mock.isMountPointCalls != 0 || mock.unmountCalls != 0 {
+		t.Errorf("expected PodMounter not to be touched, got IsMountPoint=%d Unmount=%d", mock.isMountPointCalls, mock.unmountCalls)
 	}
 }
 
 func TestNodeUnpublishVolume_SidecarTargetAlreadyGone(t *testing.T) {
-	// The sidecar fast path should succeed even if the target doesn't exist,
-	// as long as the volume is tracked in sidecarVolumes.
+	// The fast path succeeds even if the target dir doesn't exist.
 	target := "/nonexistent/sidecar/target"
 	sidecarVolumes.Store(target, struct{}{})
 	defer sidecarVolumes.Delete(target)
 
-	var fuseUnmountCalls int
-	d := &Driver{mounter: newMockMounter(), cacheBase: t.TempDir(), fuseUnmountFn: func(string) error { fuseUnmountCalls++; return nil }}
-
-	resp, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+	d, _, fuseUnmountCalls := newSidecarTestDriver(t)
+	if _, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
 		VolumeId:   "vol1",
 		TargetPath: target,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if fuseUnmountCalls != 1 {
-		t.Errorf("expected fuseUnmount to be called once, got %d", fuseUnmountCalls)
-	}
-}
-
-func TestSidecarVolumeTracking(t *testing.T) {
-	// Verify that sidecarVolumes entries are cleaned up by unpublish.
-	target := "/test/sidecar/tracking"
-	sidecarVolumes.Store(target, struct{}{})
-	defer sidecarVolumes.Delete(target)
-
-	if _, ok := sidecarVolumes.Load(target); !ok {
-		t.Fatal("expected tracking entry to exist")
-	}
-
-	mock := newMockMounter()
-	var fuseUnmountCalls int
-	d := &Driver{mounter: mock, cacheBase: t.TempDir(), fuseUnmountFn: func(string) error { fuseUnmountCalls++; return nil }}
-	// The tracked entry alone triggers the fast path.
-	_, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
-		VolumeId:   "vol1",
-		TargetPath: target,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := sidecarVolumes.Load(target); ok {
-		t.Error("expected tracking entry to be removed after unpublish")
-	}
-	if fuseUnmountCalls != 1 {
-		t.Errorf("expected fuseUnmount to be called once, got %d", fuseUnmountCalls)
-	}
-	if mock.isMountPointCalls != 0 {
-		t.Errorf("expected IsMountPoint not to be called, got %d calls", mock.isMountPointCalls)
+	if *fuseUnmountCalls != 1 {
+		t.Errorf("expected fuseUnmount to be called once, got %d", *fuseUnmountCalls)
 	}
 }
 
 func TestNodeUnpublishVolume_SidecarDoubleUnpublish(t *testing.T) {
-	// Calling NodeUnpublishVolume twice for the same sidecar target must be
-	// idempotent. The first call uses the fast path (tracked) and removes the
-	// tracking entry; the second call falls through to the PodMounter path
-	// where the missing target is treated as a no-op.
-	mock := newMockMounter()
-	var fuseUnmountCalls int
-	d := &Driver{mounter: mock, cacheBase: t.TempDir(), fuseUnmountFn: func(string) error { fuseUnmountCalls++; return nil }}
-
+	// Idempotent: first call hits the fast path and removes the tracking
+	// entry; second call falls through to the PodMounter path which treats
+	// the missing target as a no-op.
+	d, _, fuseUnmountCalls := newSidecarTestDriver(t)
 	target := filepath.Join(t.TempDir(), "target")
 	_ = os.MkdirAll(target, 0750)
 	sidecarVolumes.Store(target, struct{}{})
 	defer sidecarVolumes.Delete(target)
 
-	req := &csi.NodeUnpublishVolumeRequest{
-		VolumeId:   "vol1",
-		TargetPath: target,
-	}
-
+	req := &csi.NodeUnpublishVolumeRequest{VolumeId: "vol1", TargetPath: target}
 	if _, err := d.NodeUnpublishVolume(context.Background(), req); err != nil {
 		t.Fatalf("first unpublish: %v", err)
 	}
 	if _, ok := sidecarVolumes.Load(target); ok {
 		t.Error("expected tracking entry removed after first unpublish")
 	}
-	if fuseUnmountCalls != 1 {
-		t.Errorf("expected fuseUnmount to be called once on first unpublish, got %d", fuseUnmountCalls)
+	if *fuseUnmountCalls != 1 {
+		t.Errorf("expected fuseUnmount to be called once, got %d", *fuseUnmountCalls)
 	}
-
 	if _, err := d.NodeUnpublishVolume(context.Background(), req); err != nil {
 		t.Fatalf("second unpublish should be idempotent: %v", err)
 	}

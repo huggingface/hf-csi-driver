@@ -876,13 +876,6 @@ func (m *PodMounter) IsMountPoint(target string) (bool, error) {
 	return m.checker.IsMountPoint(target)
 }
 
-func (m *PodMounter) IsTracked(target string) bool {
-	m.mu.Lock()
-	_, tracked := m.binds[target]
-	m.mu.Unlock()
-	return tracked
-}
-
 const crashLoopRestartThreshold int32 = 2
 
 // CheckHealth returns an error if the mount pod backing this target is in

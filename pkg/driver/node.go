@@ -238,12 +238,7 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 	defer d.cleanupTokenFile(volumeID)
 	defer cleanupSidecarSocket(volumeID)
 
-	// Use the sidecar fast path when the volume was published via sidecar.
-	// Tracking is in-memory only: after a driver restart the map is empty
-	// and sidecar-published volumes fall through to the PodMounter path,
-	// which may block on a stale FUSE mount until kubelet times out and
-	// the driver pod is restarted again. Acceptable for a recovery-only
-	// edge case; promote to a persisted marker if it becomes a problem.
+	// Sidecar fast path; see sidecarVolumes for lifecycle and post-restart caveat.
 	if _, tracked := sidecarVolumes.Load(target); tracked {
 		return d.unpublishSidecarVolume(target)
 	}

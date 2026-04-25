@@ -34,10 +34,6 @@ type Mounter interface {
 	// CheckHealth returns an error if the mount backing target is unhealthy
 	// (e.g. mount pod in CrashLoopBackOff). Returns nil if healthy or unknown.
 	CheckHealth(target string) error
-	// IsTracked reports whether the mounter is managing the given target path.
-	// Used to distinguish PodMounter volumes from sidecar volumes after a
-	// driver restart (when the in-memory sidecarVolumes map is empty).
-	IsTracked(target string) bool
 	// Recover re-adopts existing mounts from a previous driver instance.
 	Recover() error
 	// Start launches background goroutines (e.g. pod watchers).
