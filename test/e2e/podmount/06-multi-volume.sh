@@ -69,7 +69,7 @@ EOF
 wait_pod_succeeded test-multi 120s
 kubectl logs test-multi | grep BOTH_OK
 
-MOUNT_COUNT=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='{.items[*].metadata.name}' | wc -w)
+MOUNT_COUNT=$(list_mount_pods | wc -w)
 log "Mount pods: $MOUNT_COUNT"
 [[ "$MOUNT_COUNT" -ge 2 ]] || log "WARNING: expected at least 2 mount pods, got $MOUNT_COUNT"
 ok "podmount/06-multi-volume"

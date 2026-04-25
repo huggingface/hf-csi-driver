@@ -11,7 +11,7 @@ kubectl delete pod test-resilience --timeout=60s
 
 log "=== Waiting for mount pod cleanup ==="
 for i in $(seq 1 30); do
-  MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+  MOUNT_PODS=$(list_mount_pods)
   if [[ -z "$MOUNT_PODS" ]]; then
     log "Mount pods cleaned up after ${i}s"
     break
@@ -19,7 +19,7 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+MOUNT_PODS=$(list_mount_pods)
 if [[ -n "$MOUNT_PODS" ]]; then
   log "WARNING: mount pods still exist after unmount: $MOUNT_PODS"
 else

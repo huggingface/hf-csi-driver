@@ -73,7 +73,7 @@ kubectl logs test-mount | grep model_type
 
 log "=== Mount pods ==="
 kubectl get pods -l hf.csi.huggingface.co/app=hf-mount
-MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='{.items[*].metadata.name}')
+MOUNT_PODS=$(list_mount_pods)
 [[ -n "$MOUNT_PODS" ]] || fail "no mount pods found"
 log "Found mount pods: $MOUNT_PODS"
 

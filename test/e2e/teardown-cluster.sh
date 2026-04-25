@@ -2,12 +2,13 @@
 # Delete the kind cluster created by setup-cluster.sh.
 #   ./teardown-cluster.sh podmount|sidecar
 
-set -euo pipefail
-
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 MODE=${1:?Usage: $0 podmount|sidecar}
-CLUSTER_NAME=${CLUSTER_NAME:-hfcsi-$MODE}
+export CLUSTER_NAME=${CLUSTER_NAME:-hfcsi-$MODE}
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
 
-if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
+if cluster_exists; then
   echo "Deleting kind cluster '$CLUSTER_NAME'"
   kind delete cluster --name "$CLUSTER_NAME"
 else

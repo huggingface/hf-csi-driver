@@ -10,8 +10,15 @@ MOUNT_POD=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='
 log "Killing mount pod: $MOUNT_POD"
 kubectl delete pod "$MOUNT_POD" --grace-period=0 --force
 
-log "Waiting for cleanup..."
-sleep 30
+log "Waiting for the driver to recreate the mount pod (up to 30s)..."
+for i in $(seq 1 30); do
+  current=$(list_mount_pods)
+  if [[ -n "$current" && "$current" != "$MOUNT_POD" ]]; then
+    log "Driver recreated mount pod after ${i}s: $current"
+    break
+  fi
+  sleep 1
+done
 
 log "=== Mount pods ==="
 kubectl get pods -l hf.csi.huggingface.co/app=hf-mount

@@ -52,9 +52,25 @@ jobs:
           helm lint deploy/helm/hf-csi-driver/
           helm lint deploy/helm/hf-csi-driver/ --set webhook.enabled=true
 
+  build-hf-mount:
+    name: Build hf-mount image
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+      - run: |
+          docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
+          docker save hf-mount-fuse:v0.3.1 -o /tmp/hf-mount-fuse.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp/hf-mount-fuse.tar
+          retention-days: 1
+          compression-level: 0
+
   e2e-podmount:
     name: E2E (podmount)
-    needs: [build, helm-lint]
+    needs: [build, helm-lint, build-hf-mount]
     runs-on:
       group: aws-general-8-plus
     env:
@@ -62,7 +78,6 @@ jobs:
       CLUSTER_NAME: e2e-podmount
       DRIVER_IMAGE: hf-csi-driver:test
       HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
-      HF_MOUNT_BUILD_DIR: /tmp/hf-mount
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -74,8 +89,12 @@ jobs:
           chmod +x "$HOME/bin/kind"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Clone hf-mount
-        run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+      - uses: actions/download-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp
+      - name: Load hf-mount image
+        run: docker load -i /tmp/hf-mount-fuse.tar
 
       - name: Setup cluster (podmount)
         run: test/e2e/setup-cluster.sh podmount
@@ -120,7 +139,7 @@ jobs:
 
   e2e-sidecar:
     name: E2E (sidecar)
-    needs: [build, helm-lint]
+    needs: [build, helm-lint, build-hf-mount]
     runs-on:
       group: aws-general-8-plus
     env:
@@ -128,7 +147,6 @@ jobs:
       CLUSTER_NAME: e2e-sidecar
       DRIVER_IMAGE: hf-csi-driver:test
       HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
-      HF_MOUNT_BUILD_DIR: /tmp/hf-mount
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
@@ -140,8 +158,12 @@ jobs:
           chmod +x "$HOME/bin/kind"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Clone hf-mount
-        run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+      - uses: actions/download-artifact@v4
+        with:
+          name: hf-mount-fuse-image
+          path: /tmp
+      - name: Load hf-mount image
+        run: docker load -i /tmp/hf-mount-fuse.tar
 
       - name: Setup cluster (sidecar)
         run: test/e2e/setup-cluster.sh sidecar

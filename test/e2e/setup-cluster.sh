@@ -27,10 +27,23 @@ export CLUSTER_NAME
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
+prepare_hfmount_image() {
+  if [[ -n "${HF_MOUNT_BUILD_DIR:-}" ]]; then
+    log "Building hf-mount from $HF_MOUNT_BUILD_DIR -> $HF_MOUNT_IMAGE"
+    docker build -t "$HF_MOUNT_IMAGE" "$HF_MOUNT_BUILD_DIR"
+  elif docker image inspect "$HF_MOUNT_IMAGE" >/dev/null 2>&1; then
+    log "Using local hf-mount image $HF_MOUNT_IMAGE"
+  else
+    log "Pulling hf-mount image $HF_MOUNT_IMAGE"
+    docker pull "$HF_MOUNT_IMAGE"
+  fi
+}
+
 if cluster_exists; then
   log "kind cluster '$CLUSTER_NAME' already exists, reusing"
+  CLUSTER_PID=""
 else
-  log "Creating kind cluster '$CLUSTER_NAME'"
+  log "Creating kind cluster '$CLUSTER_NAME' (in background)"
   KIND_CONFIG=$(mktemp)
   cat > "$KIND_CONFIG" <<EOF
 kind: Cluster
@@ -42,26 +55,23 @@ nodes:
         containerPath: /dev/fuse
         propagation: None
 EOF
-  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --wait 60s
-  rm -f "$KIND_CONFIG"
+  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --wait 60s &
+  CLUSTER_PID=$!
 fi
 
-log "Building driver image $DRIVER_IMAGE"
-docker build -t "$DRIVER_IMAGE" "$REPO_ROOT"
+log "Building driver image $DRIVER_IMAGE (in background)"
+docker build -t "$DRIVER_IMAGE" "$REPO_ROOT" &
+DRIVER_PID=$!
+
+prepare_hfmount_image
+
+wait "$DRIVER_PID"
+[[ -n "$CLUSTER_PID" ]] && wait "$CLUSTER_PID"
+rm -f "${KIND_CONFIG:-}"
+
+log "Loading images into kind"
 kind load docker-image "$DRIVER_IMAGE" --name "$CLUSTER_NAME"
-
-if [[ -n "${HF_MOUNT_BUILD_DIR:-}" ]]; then
-  log "Building hf-mount from $HF_MOUNT_BUILD_DIR -> $HF_MOUNT_IMAGE"
-  docker build -t "$HF_MOUNT_IMAGE" "$HF_MOUNT_BUILD_DIR"
-  kind load docker-image "$HF_MOUNT_IMAGE" --name "$CLUSTER_NAME"
-elif [[ "$HF_MOUNT_IMAGE" == *":"* ]] && docker image inspect "$HF_MOUNT_IMAGE" >/dev/null 2>&1; then
-  log "Loading local hf-mount image $HF_MOUNT_IMAGE into kind"
-  kind load docker-image "$HF_MOUNT_IMAGE" --name "$CLUSTER_NAME"
-else
-  log "Pulling hf-mount image $HF_MOUNT_IMAGE"
-  docker pull "$HF_MOUNT_IMAGE"
-  kind load docker-image "$HF_MOUNT_IMAGE" --name "$CLUSTER_NAME"
-fi
+kind load docker-image "$HF_MOUNT_IMAGE" --name "$CLUSTER_NAME"
 
 HFMOUNT_REPO=${HF_MOUNT_IMAGE%:*}
 HFMOUNT_TAG=${HF_MOUNT_IMAGE##*:}
@@ -91,11 +101,11 @@ log "Helm upgrade --install hf-csi (mode=$MODE)"
 helm upgrade --install hf-csi "$REPO_ROOT/deploy/helm/hf-csi-driver/" "${HELM_ARGS[@]}"
 
 kubectl rollout status daemonset hf-csi-hf-csi-driver-node \
-  --namespace "$NAMESPACE" --timeout=120s
+  --namespace "$NAMESPACE" --timeout=180s
 
 if [[ "$MODE" == "sidecar" ]]; then
   kubectl rollout status deployment hf-csi-hf-csi-driver-webhook \
-    --namespace "$NAMESPACE" --timeout=120s
+    --namespace "$NAMESPACE" --timeout=180s
 fi
 
 ok "Cluster '$CLUSTER_NAME' ready (mode=$MODE)"

@@ -6,17 +6,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 # shellcheck source=../lib.sh
 source "$SCRIPT_DIR/../lib.sh"
 
-: "${HF_TOKEN:?HF_TOKEN is required for bucket tests}"
-HUB_BUCKET=${HUB_BUCKET:-XciD/csi-e2e-bucket}
-HUB_API=${HUB_API:-https://huggingface.co/api}
-
-curl -sf "$HUB_API/whoami-v2" -H "Authorization: Bearer $HF_TOKEN" | head -1
-curl -sf -X POST "$HUB_API/buckets/$HUB_BUCKET" \
-  -H "Authorization: Bearer $HF_TOKEN" || true
-
-kubectl create secret generic hf-ci-token \
-  --from-literal=token="$HF_TOKEN" \
-  --dry-run=client -o yaml | kubectl apply -f -
+setup_bucket_token
 
 kubectl apply -f - <<EOF
 apiVersion: v1

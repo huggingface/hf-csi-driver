@@ -38,7 +38,7 @@ kubectl rollout status daemonset hf-csi-hf-csi-driver-node --timeout=120s
 sleep 10
 
 log "=== Checking mount pod survived ==="
-MOUNT_PODS=$(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o jsonpath='{.items[*].metadata.name}')
+MOUNT_PODS=$(list_mount_pods)
 [[ -n "$MOUNT_PODS" ]] || fail "mount pods disappeared after CSI driver restart"
 log "Mount pods still alive: $MOUNT_PODS"
 
