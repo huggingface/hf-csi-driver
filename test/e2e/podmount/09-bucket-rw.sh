@@ -39,7 +39,7 @@ spec:
         name: hf-ci-token
       volumeAttributes:
         mountMode: mountpod
-      sourceType: bucket
+        sourceType: bucket
         sourceId: $HUB_BUCKET
   restartPolicy: Never
 EOF

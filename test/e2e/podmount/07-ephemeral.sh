@@ -26,7 +26,7 @@ spec:
       driver: hf.csi.huggingface.co
       volumeAttributes:
         mountMode: mountpod
-      sourceType: repo
+        sourceType: repo
         sourceId: openai-community/gpt2
   restartPolicy: Never
 EOF

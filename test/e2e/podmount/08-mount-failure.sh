@@ -26,7 +26,7 @@ spec:
       driver: hf.csi.huggingface.co
       volumeAttributes:
         mountMode: mountpod
-      sourceType: repo
+        sourceType: repo
         sourceId: this-repo/does-not-exist-at-all
   restartPolicy: Never
 EOF
