@@ -69,8 +69,10 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Clone hf-mount
         run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
@@ -133,8 +135,10 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Clone hf-mount
         run: git clone --depth 1 https://github.com/huggingface/hf-mount.git /tmp/hf-mount
