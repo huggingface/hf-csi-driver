@@ -19,6 +19,7 @@ type MountOptions struct {
 	MetadataTtlMs      string
 	InodeSoftLimit     string
 	LruSweepIntervalMs string
+	FuseFdCount        string // sidecar mode: per-volume override of HF_CSI_SIDECAR_FUSE_FD_COUNT
 	ReadOnly           bool
 	ExtraArgs          []string // passthrough flags from PV mountOptions
 	TokenFile          string   // path to a file where the token is written for live refresh

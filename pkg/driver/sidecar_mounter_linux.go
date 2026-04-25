@@ -53,14 +53,23 @@ const (
 
 // sidecarFuseFdCount returns the configured number of fds to ship to the
 // sidecar (1 primary + N-1 clones), clamped to [1, 32].
-func sidecarFuseFdCount() int {
+//
+// Resolution order (most specific wins): per-volume `fuseFdCount` attribute
+// → driver-wide HF_CSI_SIDECAR_FUSE_FD_COUNT env var → defaultSidecarFuseFdCount.
+func sidecarFuseFdCount(volumeAttr string) int {
 	n := defaultSidecarFuseFdCount
 	if v := os.Getenv("HF_CSI_SIDECAR_FUSE_FD_COUNT"); v != "" {
-		parsed, err := strconv.Atoi(v)
-		if err != nil || parsed < 1 {
-			klog.Warningf("invalid HF_CSI_SIDECAR_FUSE_FD_COUNT=%q, falling back to %d", v, n)
-		} else {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 1 {
 			n = parsed
+		} else {
+			klog.Warningf("invalid HF_CSI_SIDECAR_FUSE_FD_COUNT=%q, falling back to %d", v, n)
+		}
+	}
+	if volumeAttr != "" {
+		if parsed, err := strconv.Atoi(volumeAttr); err == nil && parsed >= 1 {
+			n = parsed
+		} else {
+			klog.Warningf("invalid fuseFdCount volumeAttribute %q, falling back to %d", volumeAttr, n)
 		}
 	}
 	if n > 32 {
@@ -261,7 +270,7 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 		// multi-threaded reader. The sidecar can't issue FUSE_DEV_IOC_CLONE
 		// itself (the ioctl reopens /dev/fuse, which needs CAP_SYS_ADMIN).
 		// We send the primary plus N-1 clones in a single SCM_RIGHTS cmsg.
-		fdCount := sidecarFuseFdCount()
+		fdCount := sidecarFuseFdCount(opts.FuseFdCount)
 		fds := []int{fd}
 		for i := 1; i < fdCount; i++ {
 			cloned, err := cloneFuseFd(fd)

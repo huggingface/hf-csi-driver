@@ -30,6 +30,7 @@ const (
 	volumeCtxMetadataTtl        = "metadataTtlMs"
 	volumeCtxInodeSoftLimit     = "inodeSoftLimit"
 	volumeCtxLruSweepIntervalMs = "lruSweepIntervalMs"
+	volumeCtxFuseFdCount        = "fuseFdCount"
 	volumeCtxTokenKey           = "tokenKey"
 	volumeCtxMountFlags         = "mountFlags"
 	volumeCtxMountMode          = "mountMode"
@@ -167,6 +168,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		MetadataTtlMs:      volCtx[volumeCtxMetadataTtl],
 		InodeSoftLimit:     volCtx[volumeCtxInodeSoftLimit],
 		LruSweepIntervalMs: volCtx[volumeCtxLruSweepIntervalMs],
+		FuseFdCount:        volCtx[volumeCtxFuseFdCount],
 		ReadOnly:           req.GetReadonly(),
 		WorkloadPodUID:     volCtx[volumeCtxPodUID],
 		VolumeMountGroup:   volumeMountGroup,
