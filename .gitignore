@@ -3,3 +3,4 @@ bin/
 *.exe
 .DS_Store
 hf-mount/
+.*

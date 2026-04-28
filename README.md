@@ -40,6 +40,18 @@ helm install hf-csi deploy/helm/hf-csi-driver/ \
   --namespace kube-system
 ```
 
+For clusters that need an HTTP proxy to reach Hugging Face Hub, set the chart's
+proxy values. They are applied to the CSI node plugin and webhook, and then
+propagated to both mount pods and injected `hf-mount` sidecars:
+
+```bash
+helm install hf-csi deploy/helm/hf-csi-driver/ \
+  --namespace kube-system \
+  --set-string proxy.httpProxy=http://proxy.example:8080 \
+  --set-string proxy.httpsProxy=http://proxy.example:8080 \
+  --set-string proxy.noProxy=localhost\,127.0.0.1\,.svc\,.cluster.local\,10.0.0.0/8\,172.16.0.0/12\,192.168.0.0/16
+```
+
 ### Plain manifests
 
 ```bash

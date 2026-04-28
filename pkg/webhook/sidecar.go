@@ -64,9 +64,9 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 		RestartPolicy:   ptr.To(corev1.ContainerRestartPolicyAlways),
 		Command:         []string{"hf-mount-fuse-sidecar"},
 		Args:            []string{"--tmp-dir=" + TmpVolumeMountPath, fmt.Sprintf("--expected-mounts=%d", volumeCount)},
-		Env: []corev1.EnvVar{
+		Env: append([]corev1.EnvVar{
 			{Name: "HOME", Value: "/tmp"},
-		},
+		}, config.SidecarEnv...),
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             ptr.To(true),
 			RunAsUser:                ptr.To(int64(65534)),

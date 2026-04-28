@@ -143,7 +143,10 @@ func runWebhook(port int, certDir, sidecarImage string) {
 		klog.Fatalf("Failed to add readyz check: %v", err)
 	}
 
-	config := webhook.Config{SidecarImage: sidecarImage}
+	config := webhook.Config{
+		SidecarImage: sidecarImage,
+		SidecarEnv:   driver.ProxyEnvFromEnvironment(),
+	}
 	decoder := admission.NewDecoder(scheme)
 	injector := webhook.NewInjector(config, mgr.GetAPIReader(), decoder)
 
