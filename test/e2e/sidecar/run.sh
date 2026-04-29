@@ -3,6 +3,10 @@
 
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+export KUBECONFIG="$SCRIPT_DIR/../.kubeconfig-hfcsi-sidecar"
+set -a
+[ -f "$SCRIPT_DIR/../.env" ] && source "$SCRIPT_DIR/../.env"
+set +a
 
 TESTS=(
   01-ephemeral.sh

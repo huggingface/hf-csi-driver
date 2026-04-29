@@ -57,6 +57,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- include "hf-csi-driver.proxyEnv" . | nindent 12 }}
           securityContext:
             privileged: true
           volumeMounts:
@@ -83,7 +84,13 @@ spec:
             periodSeconds: 10
 
         - name: node-driver-registrar
-          image: {{ .Values.sidecars.nodeDriverRegistrar.image }}
+          {{- $nodeDriverRegistrarImage := .Values.sidecars.nodeDriverRegistrar.image }}
+          {{- if kindIs "string" $nodeDriverRegistrarImage }}
+          image: {{ $nodeDriverRegistrarImage | quote }}
+          {{- else }}
+          image: "{{ $nodeDriverRegistrarImage.repository }}:{{ $nodeDriverRegistrarImage.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" $nodeDriverRegistrarImage.pullPolicy }}
+          {{- end }}
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path=/var/lib/kubelet/plugins/hf.csi.huggingface.co/csi.sock
@@ -97,7 +104,13 @@ spec:
               mountPath: /registration
 
         - name: liveness-probe
-          image: {{ .Values.sidecars.livenessProbe.image }}
+          {{- $livenessProbeImage := .Values.sidecars.livenessProbe.image }}
+          {{- if kindIs "string" $livenessProbeImage }}
+          image: {{ $livenessProbeImage | quote }}
+          {{- else }}
+          image: "{{ $livenessProbeImage.repository }}:{{ $livenessProbeImage.tag }}"
+          imagePullPolicy: {{ default "IfNotPresent" $livenessProbeImage.pullPolicy }}
+          {{- end }}
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9808

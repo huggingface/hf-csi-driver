@@ -235,3 +235,31 @@ func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 		t.Fatalf("want annotation %q=0 after injection, got %q", AnnotationOriginalGracePeriod, got)
 	}
 }
+
+func TestInjectSidecar_PropagatesConfiguredEnv(t *testing.T) {
+	pod := &corev1.Pod{}
+	injectSidecar(pod, Config{
+		SidecarImage: "test:latest",
+		SidecarEnv: []corev1.EnvVar{
+			{Name: "HTTPS_PROXY", Value: "http://proxy.example:8080"},
+			{Name: "NO_PROXY", Value: "localhost,.svc"},
+		},
+	}, 1, driver.MountResources{})
+
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("expected injected sidecar, got %d init containers", len(pod.Spec.InitContainers))
+	}
+	envMap := map[string]string{}
+	for _, env := range pod.Spec.InitContainers[0].Env {
+		envMap[env.Name] = env.Value
+	}
+	if envMap["HOME"] != "/tmp" {
+		t.Fatalf("HOME = %q", envMap["HOME"])
+	}
+	if envMap["HTTPS_PROXY"] != "http://proxy.example:8080" {
+		t.Fatalf("HTTPS_PROXY = %q", envMap["HTTPS_PROXY"])
+	}
+	if envMap["NO_PROXY"] != "localhost,.svc" {
+		t.Fatalf("NO_PROXY = %q", envMap["NO_PROXY"])
+	}
+}
