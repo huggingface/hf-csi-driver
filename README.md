@@ -198,6 +198,7 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `cacheDir` | no | auto | Local cache directory for this volume |
 | `cacheSize` | no | `10000000000` | Max cache size in bytes |
 | `pollIntervalSecs` | no | `30` | Remote change polling interval |
+| `pollListingConcurrency` | no | `4` | Maximum concurrent `/api/.../tree` requests per poll round. Lower it (e.g. `2`) in shared environments (e.g. Spaces) where many mounts poll the same upstream, to reduce pressure on the Hub `/api` endpoint. Must be >= 1. |
 | `metadataTtlMs` | no | `10000` | Kernel metadata cache TTL in milliseconds |
 | `inodeSoftLimit` | no | `0` | Soft cap on in-memory inode table size (0 disables). When exceeded, `hf-mount` evicts the oldest untouched entries before inserting new ones, putting backpressure on the workload instead of letting the sidecar OOM. |
 | `lruSweepIntervalMs` | no | `5000` | Interval between background LRU sweeps that ask the kernel to drop dentries whose inode still has positive refcount. Only consulted when `inodeSoftLimit > 0`. |

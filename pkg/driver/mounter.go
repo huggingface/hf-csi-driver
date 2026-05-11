@@ -11,21 +11,22 @@ const (
 )
 
 type MountOptions struct {
-	Revision           string
-	HubEndpoint        string
-	CacheDir           string
-	CacheSize          string
-	PollIntervalSecs   string
-	MetadataTtlMs      string
-	InodeSoftLimit     string
-	LruSweepIntervalMs string
-	FuseFdCount        string // sidecar mode: per-volume override of HF_CSI_SIDECAR_FUSE_FD_COUNT
-	ReadOnly           bool
-	ExtraArgs          []string // passthrough flags from PV mountOptions
-	TokenFile          string   // path to a file where the token is written for live refresh
-	WorkloadPodUID     string   // UID of the workload pod consuming this volume
-	VolumeMountGroup   string   // fsGroup from pod security context, passed via CSI VOLUME_MOUNT_GROUP
-	Resources          MountResources // per-volume CPU/memory overrides from volumeAttributes
+	Revision               string
+	HubEndpoint            string
+	CacheDir               string
+	CacheSize              string
+	PollIntervalSecs       string
+	PollListingConcurrency string
+	MetadataTtlMs          string
+	InodeSoftLimit         string
+	LruSweepIntervalMs     string
+	FuseFdCount            string // sidecar mode: per-volume override of HF_CSI_SIDECAR_FUSE_FD_COUNT
+	ReadOnly               bool
+	ExtraArgs              []string       // passthrough flags from PV mountOptions
+	TokenFile              string         // path to a file where the token is written for live refresh
+	WorkloadPodUID         string         // UID of the workload pod consuming this volume
+	VolumeMountGroup       string         // fsGroup from pod security context, passed via CSI VOLUME_MOUNT_GROUP
+	Resources              MountResources // per-volume CPU/memory overrides from volumeAttributes
 }
 
 type Mounter interface {
@@ -64,6 +65,9 @@ func buildArgs(sourceType, sourceID, target string, opts MountOptions) ([]string
 	}
 	if opts.PollIntervalSecs != "" {
 		args = append(args, "--poll-interval-secs", opts.PollIntervalSecs)
+	}
+	if opts.PollListingConcurrency != "" {
+		args = append(args, "--poll-listing-concurrency", opts.PollListingConcurrency)
 	}
 	if opts.MetadataTtlMs != "" {
 		args = append(args, "--metadata-ttl-ms", opts.MetadataTtlMs)
