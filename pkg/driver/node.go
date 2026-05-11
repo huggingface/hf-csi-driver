@@ -20,21 +20,22 @@ const (
 	defaultRevision = "main"
 	defaultTokenKey = "token"
 
-	volumeCtxSourceType         = "sourceType"
-	volumeCtxSourceID           = "sourceId"
-	volumeCtxRevision           = "revision"
-	volumeCtxHubEndpoint        = "hubEndpoint"
-	volumeCtxCacheDir           = "cacheDir"
-	volumeCtxCacheSize          = "cacheSize"
-	volumeCtxPollInterval       = "pollIntervalSecs"
-	volumeCtxMetadataTtl        = "metadataTtlMs"
-	volumeCtxInodeSoftLimit     = "inodeSoftLimit"
-	volumeCtxLruSweepIntervalMs = "lruSweepIntervalMs"
-	volumeCtxFuseFdCount        = "fuseFdCount"
-	volumeCtxTokenKey           = "tokenKey"
-	volumeCtxMountFlags         = "mountFlags"
-	volumeCtxMountMode          = "mountMode"
-	volumeCtxPodUID             = "csi.storage.k8s.io/pod.uid"
+	volumeCtxSourceType             = "sourceType"
+	volumeCtxSourceID               = "sourceId"
+	volumeCtxRevision               = "revision"
+	volumeCtxHubEndpoint            = "hubEndpoint"
+	volumeCtxCacheDir               = "cacheDir"
+	volumeCtxCacheSize              = "cacheSize"
+	volumeCtxPollInterval           = "pollIntervalSecs"
+	volumeCtxPollListingConcurrency = "pollListingConcurrency"
+	volumeCtxMetadataTtl            = "metadataTtlMs"
+	volumeCtxInodeSoftLimit         = "inodeSoftLimit"
+	volumeCtxLruSweepIntervalMs     = "lruSweepIntervalMs"
+	volumeCtxFuseFdCount            = "fuseFdCount"
+	volumeCtxTokenKey               = "tokenKey"
+	volumeCtxMountFlags             = "mountFlags"
+	volumeCtxMountMode              = "mountMode"
+	volumeCtxPodUID                 = "csi.storage.k8s.io/pod.uid"
 
 	// MountModeSidecar runs the FUSE daemon as an injected sidecar in the
 	// workload pod; the CSI driver opens /dev/fuse and passes the fd via
@@ -160,19 +161,20 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 
 	// Build mount options.
 	opts := MountOptions{
-		Revision:           getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
-		HubEndpoint:        volCtx[volumeCtxHubEndpoint],
-		CacheDir:           getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
-		CacheSize:          volCtx[volumeCtxCacheSize],
-		PollIntervalSecs:   volCtx[volumeCtxPollInterval],
-		MetadataTtlMs:      volCtx[volumeCtxMetadataTtl],
-		InodeSoftLimit:     volCtx[volumeCtxInodeSoftLimit],
-		LruSweepIntervalMs: volCtx[volumeCtxLruSweepIntervalMs],
-		FuseFdCount:        volCtx[volumeCtxFuseFdCount],
-		ReadOnly:           req.GetReadonly(),
-		WorkloadPodUID:     volCtx[volumeCtxPodUID],
-		VolumeMountGroup:   volumeMountGroup,
-		Resources:          ParseMountResources(volCtx),
+		Revision:               getWithDefault(volCtx, volumeCtxRevision, defaultRevision),
+		HubEndpoint:            volCtx[volumeCtxHubEndpoint],
+		CacheDir:               getWithDefault(volCtx, volumeCtxCacheDir, filepath.Join(d.cacheBase, sanitizeVolumeID(volumeID))),
+		CacheSize:              volCtx[volumeCtxCacheSize],
+		PollIntervalSecs:       volCtx[volumeCtxPollInterval],
+		PollListingConcurrency: volCtx[volumeCtxPollListingConcurrency],
+		MetadataTtlMs:          volCtx[volumeCtxMetadataTtl],
+		InodeSoftLimit:         volCtx[volumeCtxInodeSoftLimit],
+		LruSweepIntervalMs:     volCtx[volumeCtxLruSweepIntervalMs],
+		FuseFdCount:            volCtx[volumeCtxFuseFdCount],
+		ReadOnly:               req.GetReadonly(),
+		WorkloadPodUID:         volCtx[volumeCtxPodUID],
+		VolumeMountGroup:       volumeMountGroup,
+		Resources:              ParseMountResources(volCtx),
 	}
 
 	// When the pod specifies an fsGroup, pass --uid and --gid to hf-mount-fuse
