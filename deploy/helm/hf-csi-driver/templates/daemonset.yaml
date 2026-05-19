@@ -74,11 +74,23 @@ spec:
             - containerPort: 9808
               name: healthz
               protocol: TCP
+          # startupProbe gates liveness until the plugin is ready. The plugin
+          # blocks on Kubernetes API and mount-pod-watcher init for ~30s on
+          # cold pods (longer under control-plane load or rapid node scale-up),
+          # so a 10s initialDelaySeconds livenessProbe with failureThreshold=3
+          # was killing the container during its first health probe — taking
+          # in-flight CSI mount RPCs down with it.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz
               port: healthz
-            initialDelaySeconds: 10
             timeoutSeconds: 3
             periodSeconds: 10
 
