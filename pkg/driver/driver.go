@@ -75,11 +75,21 @@ func (d *Driver) Run() error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	if err := d.mounter.Recover(); err != nil {
-		klog.Warningf("Mount recovery failed: %v", err)
-	}
-
+	// Start the pod watcher early. client-go's reflector retries the initial
+	// list internally on transient errors, so it does not block startup if
+	// the pod network is not yet ready.
 	d.mounter.Start(d.stopCh)
+
+	// Run mount recovery asynchronously. On a freshly-provisioned node the
+	// pod network can take ~30s to come up; doing the initial pods.List()
+	// synchronously here blocks the gRPC socket from opening and prevents
+	// node-driver-registrar from registering with kubelet, which fails any
+	// NodePublishVolume RPCs scheduled on this node during that window.
+	go func() {
+		if err := d.mounter.Recover(); err != nil {
+			klog.Warningf("Mount recovery failed: %v", err)
+		}
+	}()
 
 	listener, err := net.Listen("unix", addr)
 	if err != nil {
