@@ -21,16 +21,36 @@ esac
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+
+set -a
+[ -f "$SCRIPT_DIR/.env" ] && source "$SCRIPT_DIR/.env"
+set +a
+
+DEFAULT_NO_PROXY="localhost,127.0.0.1,.svc,.cluster.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+if [[ -z "${NO_PROXY:-}" && -n "${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}" ]]; then
+  NO_PROXY="$DEFAULT_NO_PROXY"
+fi
+
 CLUSTER_NAME=${CLUSTER_NAME:-hfcsi-$MODE}
 export CLUSTER_NAME
+export KUBECONFIG="$SCRIPT_DIR/.kubeconfig-$CLUSTER_NAME"
 
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
+DOCKER_BUILD_ARGS=( --network=host --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" --build-arg HTTP_PROXY="${HTTP_PROXY:-}" --build-arg NO_PROXY="${NO_PROXY:-}" --build-arg ALL_PROXY="${ALL_PROXY:-}" )
+
+helm_set_string() {
+  local key=$1 value=$2
+  value=${value//\\/\\\\}
+  value=${value//,/\\,}
+  HELM_ARGS+=(--set-string "$key=$value")
+}
+
 prepare_hfmount_image() {
   if [[ -n "${HF_MOUNT_BUILD_DIR:-}" ]]; then
     log "Building hf-mount from $HF_MOUNT_BUILD_DIR -> $HF_MOUNT_IMAGE"
-    docker build -t "$HF_MOUNT_IMAGE" "$HF_MOUNT_BUILD_DIR"
+    docker build "${DOCKER_BUILD_ARGS[@]}" -t "$HF_MOUNT_IMAGE" "$HF_MOUNT_BUILD_DIR"
   elif docker image inspect "$HF_MOUNT_IMAGE" >/dev/null 2>&1; then
     log "Using local hf-mount image $HF_MOUNT_IMAGE"
   else
@@ -60,7 +80,7 @@ EOF
 fi
 
 log "Building driver image $DRIVER_IMAGE (in background)"
-docker build -t "$DRIVER_IMAGE" "$REPO_ROOT" &
+docker build "${DOCKER_BUILD_ARGS[@]}" -t "$DRIVER_IMAGE" "$REPO_ROOT" &
 DRIVER_PID=$!
 
 prepare_hfmount_image
@@ -68,6 +88,9 @@ prepare_hfmount_image
 wait "$DRIVER_PID"
 [[ -n "$CLUSTER_PID" ]] && wait "$CLUSTER_PID"
 rm -f "${KIND_CONFIG:-}"
+
+log "Exporting kubeconfig for kind cluster '$CLUSTER_NAME' to $KUBECONFIG"
+kind export kubeconfig --name "$CLUSTER_NAME" --kubeconfig "$KUBECONFIG" >/dev/null
 
 log "Loading images into kind"
 kind load docker-image "$DRIVER_IMAGE" --name "$CLUSTER_NAME"
@@ -87,6 +110,11 @@ HELM_ARGS=(
   --set hfMount.image.tag="$HFMOUNT_TAG"
   --set hfMount.image.pullPolicy=Never
 )
+
+[[ -n "${HTTP_PROXY:-}" ]] && helm_set_string proxy.httpProxy "$HTTP_PROXY"
+[[ -n "${HTTPS_PROXY:-}" ]] && helm_set_string proxy.httpsProxy "$HTTPS_PROXY"
+[[ -n "${NO_PROXY:-}" ]] && helm_set_string proxy.noProxy "$NO_PROXY"
+[[ -n "${ALL_PROXY:-}" ]] && helm_set_string proxy.allProxy "$ALL_PROXY"
 
 if [[ "$MODE" == "sidecar" ]]; then
   HELM_ARGS+=(

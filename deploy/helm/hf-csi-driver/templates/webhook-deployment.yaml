@@ -32,6 +32,10 @@ spec:
             - --webhook-cert-dir=/etc/tls-certs
             - --sidecar-image={{ .Values.hfMount.image.repository }}:{{ .Values.hfMount.image.tag }}
             - --v={{ .Values.logVerbosity }}
+          {{- if or .Values.proxy.httpProxy .Values.proxy.httpsProxy .Values.proxy.noProxy .Values.proxy.allProxy }}
+          env:
+            {{- include "hf-csi-driver.proxyEnv" . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.webhook.port }}
               name: https

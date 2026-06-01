@@ -1093,13 +1093,13 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 				ImagePullPolicy: m.imagePullPolicy,
 				Command:         []string{hfMountBinary},
 				Args:            args,
-				Env: []corev1.EnvVar{
+				Env: append([]corev1.EnvVar{
 					{Name: "HF_CSI_SOURCE_TYPE", Value: sourceType},
 					{Name: "HF_CSI_SOURCE_ID", Value: sourceID},
 					{Name: "HF_CSI_VOLUME_ID", Value: volumeID},
 					{Name: "HF_CSI_NODE", Value: m.nodeID},
 					{Name: "HF_CSI_MOUNT_PATH", Value: mountPath},
-				},
+				}, ProxyEnvFromEnvironment()...),
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: ptr.To(true),
 				},

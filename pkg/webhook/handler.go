@@ -65,6 +65,8 @@ func maxQuantity(a, b *resource.Quantity) *resource.Quantity {
 type Config struct {
 	// SidecarImage is the container image for the sidecar mounter.
 	SidecarImage string
+	// SidecarEnv contains environment variables copied into injected sidecars.
+	SidecarEnv []corev1.EnvVar
 }
 
 // Injector is a mutating admission webhook handler that injects the hf-mount

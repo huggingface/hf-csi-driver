@@ -200,6 +200,33 @@ func TestBuildMountPodLabels(t *testing.T) {
 	}
 }
 
+func TestBuildMountPodProxyEnv(t *testing.T) {
+	clearProxyEnv(t)
+	t.Setenv("HTTP_PROXY", "http://proxy.example:8080")
+	t.Setenv("NO_PROXY", "localhost,.svc")
+
+	m := &PodMounter{
+		namespace:       "default",
+		nodeID:          "test-node",
+		image:           "test:latest",
+		imagePullPolicy: corev1.PullIfNotPresent,
+		serviceAccount:  "sa",
+		cacheDir:        "/cache",
+	}
+	pod := m.buildMountPod("hf-mount-abc", "abc", "repo", "user/model", "/mnt/abc", []string{"repo", "user/model", "/mnt/hf/abc"}, MountResources{})
+
+	envMap := make(map[string]string)
+	for _, env := range pod.Spec.Containers[0].Env {
+		envMap[env.Name] = env.Value
+	}
+	if envMap["HTTP_PROXY"] != "http://proxy.example:8080" {
+		t.Errorf("env HTTP_PROXY = %q", envMap["HTTP_PROXY"])
+	}
+	if envMap["NO_PROXY"] != "localhost,.svc" {
+		t.Errorf("env NO_PROXY = %q", envMap["NO_PROXY"])
+	}
+}
+
 func TestBuildMountPodNodeAffinity(t *testing.T) {
 	m := &PodMounter{
 		namespace:       "default",
@@ -310,9 +337,9 @@ func TestSanitizeLabelValue_NodeIDs(t *testing.T) {
 func TestPodStaleConditions(t *testing.T) {
 	now := metav1.Now()
 	tests := []struct {
-		name        string
-		phase       corev1.PodPhase
-		deleting    bool
+		name         string
+		phase        corev1.PodPhase
+		deleting     bool
 		wantTerminal bool
 	}{
 		{"running", corev1.PodRunning, false, false},
