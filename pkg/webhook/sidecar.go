@@ -55,6 +55,18 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 		},
 	})
 
+	// Hand the pod's termination grace to the sidecar so it can bound its
+	// SIGTERM flush drain (and hard-exit watchdog) just under grace. hf-mount
+	// can't read terminationGracePeriodSeconds itself (not exposed via the
+	// Downward API), and an unbounded drain on a slow Hub/CAS backend would
+	// keep the FUSE connection alive past grace and strand the pod (unkillable),
+	// so we pass it explicitly. Defaults to the Kubernetes default (30s) when
+	// the pod leaves it unset.
+	graceSeconds := int64(30)
+	if pod.Spec.TerminationGracePeriodSeconds != nil {
+		graceSeconds = *pod.Spec.TerminationGracePeriodSeconds
+	}
+
 	// Build the native sidecar container (init container with restartPolicy: Always).
 	// Unprivileged: receives fd from CSI driver, does NOT open /dev/fuse.
 	sidecar := corev1.Container{
@@ -66,6 +78,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 		Args:            []string{"--tmp-dir=" + TmpVolumeMountPath, fmt.Sprintf("--expected-mounts=%d", volumeCount)},
 		Env: []corev1.EnvVar{
 			{Name: "HOME", Value: "/tmp"},
+			{Name: "HF_CSI_TERMINATION_GRACE_SECONDS", Value: fmt.Sprintf("%d", graceSeconds)},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             ptr.To(true),
