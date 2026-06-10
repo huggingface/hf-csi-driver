@@ -56,7 +56,11 @@ jobs:
   helm:
     name: Publish Helm Chart
     runs-on: ubuntu-22.04
-    needs: release
+    # Gate the chart publish on a successful image push: the chart pins
+    # image.tag/webhook.image.tag to this release's tag, so publishing it before
+    # (or despite) a failed Docker build would ship a chart referencing an image
+    # that doesn't exist in the registry (ImagePullBackOff on deploy).
+    needs: [release, docker]
     if: needs.release.outputs.released == 'true'
     steps:
       - uses: actions/checkout@v4
