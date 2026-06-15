@@ -37,6 +37,7 @@ func main() {
 		mountServiceAcct = flag.String("mount-service-account", "hf-csi-driver", "Service account for mount pods")
 		mountHostNetwork = flag.Bool("mount-host-network", true, "Enable hostNetwork on mount pods")
 		namespace        = flag.String("namespace", "kube-system", "Namespace for mount pods")
+		kubeletRoot      = flag.String("kubelet-root", "/var/lib/kubelet", "Kubelet root dir; scanned by the vol_data.json reconciler")
 
 		// Webhook mode flags
 		webhookPort    = flag.Int("webhook-port", 22030, "Webhook server port")
@@ -56,7 +57,7 @@ func main() {
 
 	switch *mode {
 	case "node":
-		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork)
+		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork, *kubeletRoot)
 	case "webhook":
 		runWebhook(*webhookPort, *webhookCertDir, *sidecarImage)
 	default:
@@ -64,7 +65,7 @@ func main() {
 	}
 }
 
-func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork bool) {
+func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork bool, kubeletRoot string) {
 	if nodeID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -103,11 +104,19 @@ func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullS
 	mounter := driver.NewPodMounter(client, dynClient, namespace, nodeID, mountImage, corev1.PullPolicy(mountPullPolicy), pullSecrets, mountServiceAcct, cacheDir, mountHostNetwork)
 	drv := driver.NewDriver(endpoint, nodeID, cacheDir, mounter)
 
+	// Reconcile stuck CSI volume dirs (missing vol_data.json) left by pods
+	// deleted mid-init, which otherwise wedge kubelet's UnmountVolume forever.
+	// Ownership is verified against live pod specs (our CSI driver only).
+	reconcilerStop := make(chan struct{})
+	ownedLister := driver.NewNodeOwnedVolumeLister(client, nodeID)
+	go driver.StartVolDataReconciler(kubeletRoot, nodeID, driver.DefaultVolDataReconcileInterval, ownedLister, reconcilerStop)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
 		klog.Infof("Received signal %v, shutting down", sig)
+		close(reconcilerStop)
 		drv.Stop()
 	}()
 

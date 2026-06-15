@@ -116,6 +116,15 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	}
 
 	if mounted {
+		// Re-seed the sidecar tracking map on republish. It is in-memory only,
+		// so a node-plugin restart loses it; without this, a later
+		// NodeUnpublishVolume would miss the non-blocking sidecar fast path and
+		// fall to IsMountPoint, which can block in D-state on a wedged mount and
+		// would never reach abortFuseConnection. kubelet's requiresRepublish
+		// fires this branch periodically, re-seeding the entry after a restart.
+		if willUseSidecar {
+			sidecarVolumes.Store(target, struct{}{})
+		}
 		// Republish: kubelet calls us with fresh secrets.
 		if token != "" {
 			if willUseSidecar {
@@ -134,7 +143,9 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 			if err := checkSidecarHealth(workloadPodUID, volumeID); err != nil {
 				// Unmount the stale FUSE mount directly (non-blocking).
 				// The next NodePublishVolume call will re-mount with a new
-				// fd and socket for the restarted sidecar.
+				// fd and socket for the restarted sidecar. Abort the FUSE
+				// connection first so a wedged sidecar can't strand the mount.
+				abortFuseConnection(target)
 				if umountErr := d.fuseUnmountFn(target); umountErr != nil {
 					klog.V(4).Infof("Sidecar health unmount %s: %v", target, umountErr)
 					// Keep tracking entry so the fast path is used on retry.
@@ -289,6 +300,11 @@ func (d *Driver) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVo
 //   - Not a mount (EINVAL): harmless, ignored
 //   - Path doesn't exist: harmless, ignored
 func (d *Driver) unpublishSidecarVolume(target string) (*csi.NodeUnpublishVolumeResponse, error) {
+	// Abort the FUSE connection before detaching: if the in-pod sidecar daemon
+	// wedged, MNT_DETACH alone leaves it un-reapable (unkillable pod). `target`
+	// here is the direct sidecar FUSE mount, never a bind reference, so it is
+	// safe to abort. See abortFuseConnection.
+	abortFuseConnection(target)
 	if err := d.fuseUnmountFn(target); err != nil {
 		// EINVAL = not a mount, ENOENT = path gone — both are benign.
 		if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOENT) {

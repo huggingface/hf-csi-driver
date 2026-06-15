@@ -17,6 +17,8 @@ Pod -> kubelet -> CSI NodePublishVolume -> mount pod (hf-mount-fuse) -> FUSE mou
 - **Static provisioning**: users create PV/PVC pairs pointing to a bucket or repo
 - **HF token**: passed via Kubernetes Secret through `nodePublishSecretRef`, refreshed live via `requiresRepublish`
 - **Mount flags passthrough**: PV `mountOptions` are forwarded as `--flag` arguments to hf-mount-fuse
+- **Graceful unmount (sidecar mode)**: the sidecar unpublish path aborts the FUSE connection (`/sys/fs/fuse/connections/<minor>/abort`, minor resolved from `/proc/self/mountinfo` — never a blocking `stat`) before `MNT_DETACH`. If the in-pod FUSE daemon wedged (a thread stuck in an uninterruptible `inval_inode` writev), `MNT_DETACH` alone would leave it un-reapable and the pod stuck `Terminating`; aborting errors out the in-kernel waiter so the pod can finalize. The abort is scoped to the direct sidecar mount only — never bind-mount references, which share the source connection.
+- **Stuck-volume reconciler**: a node-plugin sweep repairs CSI volume dirs that are missing kubelet's `vol_data.json` — left behind by pods deleted mid-init — which otherwise wedge kubelet's `UnmountVolume` retry loop forever. Ownership is verified against **live pod specs** (only inline CSI volumes whose driver is this one), never inferred from directory names, and a stale-age + `O_EXCL` write avoid racing an in-progress publish. Scans `<--kubelet-root>/pods` (default `/var/lib/kubelet`).
 
 ## Prerequisites
 
