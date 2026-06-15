@@ -60,6 +60,6 @@ func fuseMinorForMount(mountPoint string) (int, bool) {
 		klog.V(4).Infof("open mountinfo: %v", err)
 		return 0, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return parseFuseMinor(f, mountPoint)
 }

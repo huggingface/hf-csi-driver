@@ -174,9 +174,17 @@ func repairVolData(volDir, volName, nodeID string) bool {
 		klog.Warningf("vol_data reconciler: create %s: %v", dataPath, err)
 		return false
 	}
-	defer f.Close()
 	if _, err := f.Write(buf); err != nil {
+		_ = f.Close()
+		_ = os.Remove(dataPath) // don't leave a partial file the next sweep would skip
 		klog.Warningf("vol_data reconciler: write %s: %v", dataPath, err)
+		return false
+	}
+	// Check Close too: a deferred error here can mean a partial write. Removing
+	// the file lets a later sweep retry rather than leaving JSON kubelet can't parse.
+	if err := f.Close(); err != nil {
+		_ = os.Remove(dataPath)
+		klog.Warningf("vol_data reconciler: close %s: %v", dataPath, err)
 		return false
 	}
 	klog.Infof("vol_data reconciler: wrote recovery vol_data.json for stuck volume %q (%s)", volName, volDir)
