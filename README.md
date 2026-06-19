@@ -19,12 +19,14 @@ Pod -> kubelet -> CSI NodePublishVolume -> mount pod (hf-mount-fuse) -> FUSE mou
 - **Mount flags passthrough**: PV `mountOptions` are forwarded as `--flag` arguments to hf-mount-fuse
 - **Graceful unmount (sidecar mode)**: the sidecar unpublish path aborts the FUSE connection (`/sys/fs/fuse/connections/<minor>/abort`, minor resolved from `/proc/self/mountinfo` — never a blocking `stat`) before `MNT_DETACH`. If the in-pod FUSE daemon wedged (a thread stuck in an uninterruptible `inval_inode` writev), `MNT_DETACH` alone would leave it un-reapable and the pod stuck `Terminating`; aborting errors out the in-kernel waiter so the pod can finalize. The abort is scoped to the direct sidecar mount only — never bind-mount references, which share the source connection.
 - **Stuck-volume reconciler**: a node-plugin sweep repairs CSI volume dirs that are missing kubelet's `vol_data.json` — left behind by pods deleted mid-init — which otherwise wedge kubelet's `UnmountVolume` retry loop forever. Ownership is verified against **live pod specs** (only inline CSI volumes whose driver is this one), never inferred from directory names, and a stale-age + `O_EXCL` write avoid racing an in-progress publish. Scans `<--kubelet-root>/pods` (default `/var/lib/kubelet`).
+- **Orphaned-connection sweep**: the unpublish-time abort above only fires on the normal teardown path. When a connection is *already* orphaned — the serving hf-mount daemon is a zombie/gone and no `NodeUnpublishVolume` is in flight — a periodic node sweep (`--fuse-sweep-interval`, default `60s`) aborts it. Without this, the dead FUSE superblock wedges its own `umount` (stuck in `fuse_kill_sb_anon`) **and** any node-wide `sync(2)` that walks all superblocks — stranding *unrelated* pods on the node in `Terminating` (see [Node-layer hardening](#node-layer-hardening) below). The sweep is strictly scoped: it only ever touches our FUSE mounts (mount source `hf-mount` or under the driver's source dir) and aborts a connection only when `waiting > 0`, sustained across two sweeps, **and** no live process is serving the mount (positive proof of life — the daemon's argv carries the volume ID, or its cgroup carries the workload pod UID, and it holds an open `/dev/fuse` fd). Requires `hostPID` so the plugin can see node processes. Disable with `--fuse-sweep-enabled=false` (also drop `hostPID`).
 
 ## Prerequisites
 
 - Kubernetes 1.26+
 - FUSE support on nodes (`/dev/fuse` available, `fuse3` installed)
 - The CSI driver and mount pod containers run as `privileged` (required for FUSE + mount propagation)
+- The node DaemonSet runs with `hostPID: true` (required by the orphaned-connection sweep to inspect node processes; set `fuseSweep.enabled=false` and `hostPID=false` together to opt out)
 
 ## Installation
 
@@ -271,6 +273,19 @@ make build
 # Tests
 make test
 ```
+
+## Node-layer hardening
+
+A wedged FUSE connection (serving daemon dead, requests stuck in the kernel) is dangerous beyond its own pod: `sync(2)` walks **every** mounted superblock, so a single dead FUSE superblock blocks any node-wide `sync(2)` — and that has stranded *unrelated*, healthy pods in `Terminating` for hours while they held scarce GPUs.
+
+We investigated where that node-wide `sync` originates and confirmed it is **not** in this driver, nor in the container-runtime teardown path: current runc/libcontainer issue no global `sync` (`finalizeRootfs`/`pivotRoot` don't sync), containerd only does a *scoped* `syncfs(fd)` on the image-unpack path (`core/diff/apply/apply_linux.go`), kubelet's volume manager and sandbox teardown call no global sync, and CRI-O uses scoped `syncfs` on Linux. The stranding `sync` is a *separate*, unrelated caller on the node (node agent, `preStop` hook, cron, logrotate) that simply gets caught walking the dead superblock — same root cause as the `umount` stuck in `fuse_kill_sb_anon`. There is therefore no teardown `sync` to scope to `syncfs`; the only remediation is to clear the dead connection.
+
+This driver clears it on two paths:
+
+1. **At unpublish** (sidecar mode) — abort the connection before `MNT_DETACH` (see *Graceful unmount* above).
+2. **Periodically** — the orphaned-connection sweep (above) is the recovery path when a connection is already orphaned and no unpublish will ever fire. This replaces the manual operator step of hand-mapping pod-uid → minor via `/proc/1/mountinfo` and writing `echo 1 > /sys/fs/fuse/connections/<minor>/abort`.
+
+The underlying hf-mount runtime deadlock is tracked separately in [huggingface/hf-mount](https://github.com/huggingface/hf-mount); these node-layer changes contain the blast radius and auto-recover whatever still slips through.
 
 ## Architecture
 

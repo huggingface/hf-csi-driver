@@ -23,6 +23,18 @@ updateStrategy:
 
 hostNetwork: true
 
+# hostPID is required by the orphaned-FUSE-connection sweep (fuseSweep) so the
+# plugin can inspect node processes. Set both to false together to opt out.
+hostPID: true
+
+# Periodic sweep that aborts FUSE connections whose serving hf-mount daemon is
+# gone (zombie/absent) — the recovery path for connections orphaned with no
+# NodeUnpublishVolume in flight. Strictly scoped to this driver's mounts and
+# only fires when no live daemon is serving the mount.
+fuseSweep:
+  enabled: true
+  interval: 60s
+
 nodeSelector:
   kubernetes.io/os: linux
 

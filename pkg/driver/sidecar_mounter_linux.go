@@ -153,7 +153,9 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	}
 	flags := uintptr(syscall.MS_NODEV | syscall.MS_NOSUID)
 	mountData := fmt.Sprintf("fd=%d,rootmode=40755,user_id=%d,group_id=%d,allow_other,default_permissions", fd, fuseUID, fuseGID)
-	if err := syscall.Mount("hf-mount", target, "fuse", flags, mountData); err != nil {
+	// fuseMountSource is the mount "source" the orphan sweeper scopes on — keep
+	// them in sync so a sidecar mount is always recognised as ours.
+	if err := syscall.Mount(fuseMountSource, target, "fuse", flags, mountData); err != nil {
 		_ = syscall.Close(fd)
 		return fmt.Errorf("fuse mount on %s: %w", target, err)
 	}
