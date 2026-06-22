@@ -30,7 +30,7 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --node-id=$(CSI_NODE_NAME)
             - --cache-dir=/var/lib/hf-csi-driver/cache
-            - --mount-image=ghcr.io/huggingface/hf-mount-fuse:v0.3.1
+            - --mount-image=ghcr.io/huggingface/hf-mount-fuse:v0.7.2
             - --mount-pull-policy=IfNotPresent
             - --fuse-sweep-enabled=true
             - --fuse-sweep-interval=60s
