@@ -243,11 +243,30 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 
 	// --- Step 4: Async goroutine sends the fd when the sidecar connects ---
 
+	// Exempt this connection from the orphan sweeper until the fd handoff
+	// finishes. Until the sidecar receives the fd over SCM_RIGHTS, the fd lives
+	// in this (CSI plugin) process — not the workload pod — so neither liveness
+	// signal would match a healthy, about-to-be-served mount, and a slow sidecar
+	// startup could otherwise look orphaned. fuseMinorForMount parses mountinfo
+	// (never a blocking stat on the fresh mount).
+	pendingMinor, hasPendingMinor := fuseMinorForMount(target)
+	if hasPendingMinor {
+		markSidecarHandoffPending(pendingMinor)
+	}
+
 	// NodePublishVolume returns immediately after the kernel mount (step 1).
 	// The goroutine waits for the sidecar to connect and passes the fd.
 	// If the sidecar never connects (timeout), the fd is closed and the
 	// mount becomes stale (ENOTCONN on reads).
 	go func() {
+		// Handoff resolved (fd sent, or timed out and closed): re-enable the
+		// sweeper for this minor — it is now either served by the sidecar or
+		// genuinely stale and eligible for abort.
+		defer func() {
+			if hasPendingMinor {
+				clearSidecarHandoffPending(pendingMinor)
+			}
+		}()
 		defer func() {
 			_ = listener.Close()
 			klog.V(4).Infof("Closed socket listener %s", socketPath)

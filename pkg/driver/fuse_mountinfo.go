@@ -63,7 +63,11 @@ type fuseMount struct {
 //
 // The mountinfo tail after the " - " separator is `<fstype> <source> <opts>`,
 // so fstype is fields[sep+1] and source is fields[sep+2].
-func parseFuseMounts(r io.Reader) []fuseMount {
+//
+// A scanner error (short read, line too long) returns a non-nil error so the
+// caller skips the sweep rather than acting on a truncated mount table — a
+// partial table could hide the source mount that proves a connection is ours.
+func parseFuseMounts(r io.Reader) ([]fuseMount, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var out []fuseMount
@@ -101,5 +105,8 @@ func parseFuseMounts(r io.Reader) []fuseMount {
 			source:     fields[sep+2],
 		})
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

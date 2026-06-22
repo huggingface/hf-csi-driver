@@ -23,11 +23,12 @@ const (
 // StartFuseSweeper runs the orphaned-FUSE-connection sweep until stopCh closes.
 func StartFuseSweeper(interval time.Duration, stopCh <-chan struct{}) {
 	s := newFuseSweeper(fuseSweepProviders{
-		connections: listFuseConnections,
-		waiting:     fuseConnWaiting,
-		ourMounts:   listOurFuseMounts,
-		servers:     listFuseServers,
-		abort:       abortFuseMinor,
+		connections:    listFuseConnections,
+		waiting:        fuseConnWaiting,
+		ourMounts:      listOurFuseMounts,
+		servers:        listFuseServers,
+		abort:          abortFuseMinor,
+		handoffPending: sidecarHandoffPending,
 	}, interval)
 	s.run(stopCh)
 }
@@ -68,8 +69,12 @@ func listOurFuseMounts() (map[int][]string, error) {
 	}
 	defer func() { _ = f.Close() }()
 
+	mounts, err := parseFuseMounts(f)
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[int][]string)
-	for _, fm := range parseFuseMounts(f) {
+	for _, fm := range mounts {
 		if isOurFuseMount(fm) {
 			out[fm.minor] = append(out[fm.minor], fm.mountpoint)
 		}
@@ -77,10 +82,13 @@ func listOurFuseMounts() (map[int][]string, error) {
 	return out, nil
 }
 
-// listFuseServers enumerates every process holding an open /dev/fuse fd. A
-// top-level /proc read failure is returned as an error (so the sweep skips
-// rather than mistaking it for "no daemons"); per-process errors (a process
-// exiting mid-scan, or unreadable fds) are skipped silently.
+// listFuseServers enumerates every process holding an open /dev/fuse fd.
+//
+// Fail-safe is tri-state, because a false "no live daemon" is what would let us
+// abort a live connection: a process that simply *vanished* mid-scan (ENOENT) is
+// gone and skipped, but any *other* read error (permission, transient I/O) is
+// treated as uncertainty and aborts the whole sweep — we would rather skip a
+// sweep than misread an unreadable live daemon as dead.
 func listFuseServers() ([]fuseServerProc, error) {
 	entries, err := os.ReadDir(procDir)
 	if err != nil {
@@ -92,13 +100,34 @@ func listFuseServers() ([]fuseServerProc, error) {
 		if err != nil {
 			continue // not a pid directory
 		}
-		if !processHoldsDevFuse(pid) {
+		holds, err := processHoldsDevFuse(pid)
+		if err != nil {
+			if isGone(err) {
+				continue
+			}
+			return nil, err // uncertain — skip the sweep
+		}
+		if !holds {
 			continue
+		}
+		cmdline, err := readProcField(filepath.Join(procDir, e.Name(), "cmdline"))
+		if err != nil {
+			if isGone(err) {
+				continue
+			}
+			return nil, err
+		}
+		cgroup, err := readProcField(filepath.Join(procDir, e.Name(), "cgroup"))
+		if err != nil {
+			if isGone(err) {
+				continue
+			}
+			return nil, err
 		}
 		servers = append(servers, fuseServerProc{
 			pid:     pid,
-			cmdline: readProcCmdline(pid),
-			cgroup:  readProcFile(filepath.Join(procDir, e.Name(), "cgroup")),
+			cmdline: cmdlineToString(cmdline),
+			cgroup:  string(cgroup),
 		})
 	}
 	return servers, nil
@@ -106,40 +135,47 @@ func listFuseServers() ([]fuseServerProc, error) {
 
 // processHoldsDevFuse reports whether pid has any fd pointing at /dev/fuse. A
 // zombie has already closed its fds, so it reads as not holding — exactly how we
-// distinguish a dead daemon from a live one.
-func processHoldsDevFuse(pid int) bool {
+// distinguish a dead daemon from a live one. Returns a non-ENOENT error as
+// uncertainty (see listFuseServers).
+func processHoldsDevFuse(pid int) (bool, error) {
 	fdDir := filepath.Join(procDir, strconv.Itoa(pid), "fd")
 	entries, err := os.ReadDir(fdDir)
 	if err != nil {
-		return false
+		if isGone(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	for _, e := range entries {
 		target, err := os.Readlink(filepath.Join(fdDir, e.Name()))
 		if err != nil {
-			continue
+			if isGone(err) {
+				continue // fd closed mid-scan
+			}
+			return false, err
 		}
 		if target == devFuse {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func readProcCmdline(pid int) string {
-	b, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return ""
-	}
-	// argv is NUL-separated and NUL-terminated; render it space-joined.
+// isGone reports whether err means the proc entry vanished (process or fd
+// exited) — safe to skip. Any other error is uncertainty the caller must not
+// swallow into "dead daemon".
+func isGone(err error) bool {
+	return os.IsNotExist(err)
+}
+
+func readProcField(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
+// cmdlineToString renders NUL-separated, NUL-terminated argv as a space-joined
+// string.
+func cmdlineToString(b []byte) string {
 	return strings.ReplaceAll(strings.Trim(string(b), "\x00"), "\x00", " ")
-}
-
-func readProcFile(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
 func abortFuseMinor(minor int) error {

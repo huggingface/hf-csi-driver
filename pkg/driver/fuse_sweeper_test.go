@@ -2,6 +2,7 @@ package driver
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,10 @@ func TestParseFuseMounts(t *testing.T) {
 602 30 0:200 / /var/lib/kubelet/pods/uid-b/volumes/kubernetes.io~csi/hf-vol-0/mount rw - fuse sshfs rw
 603 30 0:99 / /mnt/ext rw - ext4 /dev/x rw
 `
-	mounts := parseFuseMounts(strings.NewReader(mountinfo))
+	mounts, err := parseFuseMounts(strings.NewReader(mountinfo))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(mounts) != 3 {
 		t.Fatalf("got %d fuse mounts, want 3: %+v", len(mounts), mounts)
 	}
@@ -106,7 +110,27 @@ func TestMountHasLiveDaemon(t *testing.T) {
 			t.Fatal("did not expect a live daemon match")
 		}
 	})
+	t.Run("bare volume-id substring is not a match (anchored)", func(t *testing.T) {
+		// The hex appears in an unrelated arg, not as the /mnt/hf/<id> token.
+		servers := []fuseServerProc{{pid: 13, cmdline: "some-tool --cache /data/" + vol + "/x"}}
+		if mountHasLiveDaemon([]string{srcMount}, servers) {
+			t.Fatal("unanchored hex substring must not count as a live daemon")
+		}
+	})
 }
+
+func TestParseFuseMountsScannerError(t *testing.T) {
+	// A reader that yields a partial line then errors must surface the error,
+	// never a truncated mount list.
+	r := io.MultiReader(strings.NewReader("600 30 0:142 / "), &errReader{})
+	if _, err := parseFuseMounts(r); err == nil {
+		t.Fatal("expected scanner error to propagate")
+	}
+}
+
+type errReader struct{}
+
+func (*errReader) Read([]byte) (int, error) { return 0, fmt.Errorf("boom") }
 
 // fakeSweep drives the sweeper with in-memory state.
 type fakeSweep struct {
@@ -114,6 +138,7 @@ type fakeSweep struct {
 	waiting    map[int]int64
 	mounts     map[int][]string
 	servers    []fuseServerProc
+	pending    map[int]bool
 	connErr    error
 	mountsErr  error
 	serversErr error
@@ -130,9 +155,10 @@ func (f *fakeSweep) providers() fuseSweepProviders {
 			}
 			return w, nil
 		},
-		ourMounts: func() (map[int][]string, error) { return f.mounts, f.mountsErr },
-		servers:   func() ([]fuseServerProc, error) { return f.servers, f.serversErr },
-		abort:     func(m int) error { f.aborted = append(f.aborted, m); return nil },
+		ourMounts:      func() (map[int][]string, error) { return f.mounts, f.mountsErr },
+		servers:        func() ([]fuseServerProc, error) { return f.servers, f.serversErr },
+		abort:          func(m int) error { f.aborted = append(f.aborted, m); return nil },
+		handoffPending: func(m int) bool { return f.pending[m] },
 	}
 }
 
@@ -183,6 +209,32 @@ func TestSweepNeverAbortsLiveDaemon(t *testing.T) {
 	}
 	if len(f.aborted) != 0 {
 		t.Fatalf("aborted a connection with a live daemon: %v", f.aborted)
+	}
+}
+
+func TestSweepExemptsSidecarHandoffInFlight(t *testing.T) {
+	// Healthy sidecar mount, fd still mid-handoff: waiting>0, no server matches
+	// (the fd is in the CSI plugin, not the workload pod), but it must NOT abort.
+	f := &fakeSweep{
+		conns:   []int{142},
+		waiting: map[int]int64{142: 3},
+		mounts:  ourMountFor(testVol),
+		servers: nil,
+		pending: map[int]bool{142: true},
+	}
+	s := newFuseSweeper(f.providers(), DefaultFuseSweepInterval)
+	for i := 0; i < 4; i++ {
+		s.sweep()
+	}
+	if len(f.aborted) != 0 {
+		t.Fatalf("aborted a mount whose fd handoff was in flight: %v", f.aborted)
+	}
+	// Once the handoff resolves with still no daemon, it becomes eligible.
+	f.pending = nil
+	s.sweep()
+	s.sweep()
+	if len(f.aborted) != 1 || f.aborted[0] != 142 {
+		t.Fatalf("expected abort after handoff resolved with no daemon, got %v", f.aborted)
 	}
 }
 

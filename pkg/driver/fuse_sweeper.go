@@ -3,6 +3,7 @@ package driver
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -27,7 +28,28 @@ const (
 	// momentarily busy, so a single observation is unreliable; requiring two
 	// sweeps (~one interval) of sustained orphaning avoids racing a live daemon.
 	orphanConfirmSweeps = 2
+
+	// containerMountPathPrefix is the in-container mount path prefix the mount
+	// pod's hf-mount daemon carries in its argv (see PodMounter.Mount, which
+	// passes /mnt/hf/<volumeID> as the mount target). Matching the full
+	// /mnt/hf/<volumeID> token rather than the bare 12-hex volume ID anchors the
+	// argv check so an unrelated process can't masquerade as the daemon.
+	containerMountPathPrefix = "/mnt/hf/"
 )
+
+// pendingSidecarMinors holds FUSE connection minors whose /dev/fuse fd is still
+// being handed to an in-pod sidecar over the SCM_RIGHTS socket. During that
+// window the fd lives in this (the CSI plugin) process, not the workload pod, so
+// neither liveness signal matches even though the mount is healthy and about to
+// be served. The sweeper exempts these minors so it never aborts a mount that is
+// merely mid-handoff. Entries are added when the kernel mount succeeds and
+// removed when the handoff completes or its goroutine gives up (after which the
+// connection is either served by the sidecar or genuinely stale).
+var pendingSidecarMinors sync.Map // minor (int) -> struct{}
+
+func markSidecarHandoffPending(minor int)  { pendingSidecarMinors.Store(minor, struct{}{}) }
+func clearSidecarHandoffPending(minor int) { pendingSidecarMinors.Delete(minor) }
+func sidecarHandoffPending(minor int) bool { _, ok := pendingSidecarMinors.Load(minor); return ok }
 
 // fuseServerProc is a live process holding an open /dev/fuse fd — i.e. a process
 // that could be serving a FUSE connection. Zombies never appear here: a defunct
@@ -53,6 +75,9 @@ type fuseSweepProviders struct {
 	servers func() ([]fuseServerProc, error)
 	// abort force-aborts a connection minor.
 	abort func(minor int) error
+	// handoffPending reports whether a minor's fd is mid-handoff to a sidecar
+	// (see pendingSidecarMinors). May be nil, treated as "never pending".
+	handoffPending func(minor int) bool
 }
 
 // fuseSweeper periodically aborts FUSE connections whose serving daemon is gone
@@ -136,8 +161,11 @@ func (s *fuseSweeper) sweep() {
 
 		// Orphaned = the kernel is waiting on requests AND no live process is
 		// serving the mount. The liveness check is positive proof of life, so
-		// we abort only when it is definitively false.
-		if w <= 0 || mountHasLiveDaemon(mps, servers) {
+		// we abort only when it is definitively false. A mount whose fd is still
+		// being handed to its sidecar is healthy-but-not-yet-served, so it is
+		// exempt too.
+		pending := s.p.handoffPending != nil && s.p.handoffPending(minor)
+		if w <= 0 || pending || mountHasLiveDaemon(mps, servers) {
 			delete(s.orphanStreak, minor)
 			delete(s.aborted, minor)
 			continue
@@ -195,7 +223,10 @@ func mountHasLiveDaemon(mountpoints []string, servers []fuseServerProc) bool {
 	}
 	for _, srv := range servers {
 		for _, v := range volumeIDs {
-			if v != "" && strings.Contains(srv.cmdline, v) {
+			// Anchor on the full /mnt/hf/<volumeID> argv token, not the bare
+			// 12-hex ID, so a stray hex substring in some other process's argv
+			// can't be mistaken for the daemon.
+			if v != "" && strings.Contains(srv.cmdline, containerMountPathPrefix+v) {
 				return true
 			}
 		}
