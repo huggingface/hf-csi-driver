@@ -30,6 +30,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       hostNetwork: {{ .Values.hostNetwork }}
+      # hostPID lets the plugin see every node process so the orphaned-FUSE
+      # sweep can prove a connection's serving daemon is alive (holds /dev/fuse)
+      # before aborting it. Required when fuseSweep.enabled is true.
+      hostPID: {{ .Values.hostPID }}
       serviceAccountName: {{ include "hf-csi-driver.fullname" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -51,6 +55,8 @@ spec:
             - --mount-service-account={{ include "hf-csi-driver.fullname" . }}
             - --mount-host-network={{ .Values.hfMount.hostNetwork }}
             - --namespace={{ .Release.Namespace }}
+            - --fuse-sweep-enabled={{ .Values.fuseSweep.enabled }}
+            - --fuse-sweep-interval={{ .Values.fuseSweep.interval }}
             - --v={{ .Values.logVerbosity }}
           env:
             - name: CSI_NODE_NAME

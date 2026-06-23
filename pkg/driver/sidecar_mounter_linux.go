@@ -153,7 +153,9 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	}
 	flags := uintptr(syscall.MS_NODEV | syscall.MS_NOSUID)
 	mountData := fmt.Sprintf("fd=%d,rootmode=40755,user_id=%d,group_id=%d,allow_other,default_permissions", fd, fuseUID, fuseGID)
-	if err := syscall.Mount("hf-mount", target, "fuse", flags, mountData); err != nil {
+	// fuseMountSource is the mount "source" the orphan sweeper scopes on — keep
+	// them in sync so a sidecar mount is always recognised as ours.
+	if err := syscall.Mount(fuseMountSource, target, "fuse", flags, mountData); err != nil {
 		_ = syscall.Close(fd)
 		return fmt.Errorf("fuse mount on %s: %w", target, err)
 	}
@@ -241,11 +243,30 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 
 	// --- Step 4: Async goroutine sends the fd when the sidecar connects ---
 
+	// Exempt this connection from the orphan sweeper until the fd handoff
+	// finishes. Until the sidecar receives the fd over SCM_RIGHTS, the fd lives
+	// in this (CSI plugin) process — not the workload pod — so neither liveness
+	// signal would match a healthy, about-to-be-served mount, and a slow sidecar
+	// startup could otherwise look orphaned. fuseMinorForMount parses mountinfo
+	// (never a blocking stat on the fresh mount).
+	pendingMinor, hasPendingMinor := fuseMinorForMount(target)
+	if hasPendingMinor {
+		markSidecarHandoffPending(pendingMinor)
+	}
+
 	// NodePublishVolume returns immediately after the kernel mount (step 1).
 	// The goroutine waits for the sidecar to connect and passes the fd.
 	// If the sidecar never connects (timeout), the fd is closed and the
 	// mount becomes stale (ENOTCONN on reads).
 	go func() {
+		// Handoff resolved (fd sent, or timed out and closed): re-enable the
+		// sweeper for this minor — it is now either served by the sidecar or
+		// genuinely stale and eligible for abort.
+		defer func() {
+			if hasPendingMinor {
+				clearSidecarHandoffPending(pendingMinor)
+			}
+		}()
 		defer func() {
 			_ = listener.Close()
 			klog.V(4).Infof("Closed socket listener %s", socketPath)
