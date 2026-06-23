@@ -563,3 +563,41 @@ func TestNodeUnpublishVolume_SidecarDoubleUnpublish(t *testing.T) {
 		t.Fatalf("second unpublish should be idempotent: %v", err)
 	}
 }
+
+func TestNodeUnpublishVolume_SidecarRecovery(t *testing.T) {
+	// A driver restart wipes the in-memory sidecarVolumes map.
+	// We mock mountinfo to simulate an existing sidecar mount and run recovery,
+	// verifying that NodeUnpublishVolume still uses the fast path (fuseUnmount)
+	// and doesn't block on IsMountPoint.
+	d, mock, fuseUnmountCalls := newSidecarTestDriver(t)
+	target := filepath.Join(t.TempDir(), "target")
+	_ = os.MkdirAll(target, 0750)
+
+	// Create a mock mountinfo file with a sidecar mount entry
+	mountinfoPath := filepath.Join(t.TempDir(), "mountinfo")
+	mockMountinfo := fmt.Sprintf("36 35 98:0 / %s rw,... - fuse.hf-mount source super_opts\n", target)
+	if err := os.WriteFile(mountinfoPath, []byte(mockMountinfo), 0644); err != nil {
+		t.Fatalf("failed to write mock mountinfo: %v", err)
+	}
+
+	// 1. Recover sidecar volumes
+	recoverSidecarVolumes(d.cacheBase, mountinfoPath)
+
+	// 2. Unpublish should use the fast path (because it was recovered)
+	if _, err := d.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   "vol1",
+		TargetPath: target,
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := sidecarVolumes.Load(target); ok {
+		t.Error("expected sidecar tracking entry to be removed")
+	}
+	if *fuseUnmountCalls != 1 {
+		t.Errorf("expected fuseUnmount to be called once, got %d", *fuseUnmountCalls)
+	}
+	if mock.isMountPointCalls != 0 || mock.unmountCalls != 0 {
+		t.Errorf("expected PodMounter not to be touched, got IsMountPoint=%d Unmount=%d", mock.isMountPointCalls, mock.unmountCalls)
+	}
+}

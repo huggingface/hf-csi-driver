@@ -47,3 +47,28 @@ func parseFuseMinor(r io.Reader, mountPoint string) (int, bool) {
 	}
 	return 0, false
 }
+
+// parseFuseMounts scans /proc/self/mountinfo content and calls fn with the
+// mountPoint for every FUSE mount found.
+func parseFuseMounts(r io.Reader, fn func(mountPoint string)) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		mountPoint := fields[4]
+		sep := -1
+		for i, fld := range fields {
+			if fld == "-" {
+				sep = i
+				break
+			}
+		}
+		if sep == -1 || sep+1 >= len(fields) || !strings.HasPrefix(fields[sep+1], "fuse") {
+			continue
+		}
+		fn(mountPoint)
+	}
+}

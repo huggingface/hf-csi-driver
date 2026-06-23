@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,7 @@ func (d *Driver) Run() error {
 	// node-driver-registrar from registering with kubelet, which fails any
 	// NodePublishVolume RPCs scheduled on this node during that window.
 	go func() {
+		recoverSidecarVolumes(d.cacheBase, "/proc/self/mountinfo")
 		if err := d.mounter.Recover(); err != nil {
 			klog.Warningf("Mount recovery failed: %v", err)
 		}
@@ -146,4 +148,29 @@ func ParseEndpoint(endpoint string) (string, string, error) {
 		addr = u.Host
 	}
 	return u.Scheme, addr, nil
+}
+
+// recoverSidecarVolumes scans mountinfo on startup to reconstruct
+// the sidecarVolumes tracking map, ensuring that untracked sidecar mounts
+// (e.g., after a driver restart) don't fall back to the blocking IsMountPoint
+// path during NodeUnpublishVolume.
+func recoverSidecarVolumes(cacheBase, mountinfoPath string) {
+	f, err := os.Open(mountinfoPath)
+	if err != nil {
+		klog.Warningf("Failed to open mountinfo for sidecar recovery: %v", err)
+		return
+	}
+	defer f.Close()
+
+	// PodMounter MountPod FUSE mounts use a source path under mountBaseDir.
+	// Sidecar mounts use the kubelet target path directly.
+	recovered := 0
+	parseFuseMounts(f, func(mountPoint string) {
+		if !strings.HasPrefix(mountPoint, mountBaseDir) {
+			sidecarVolumes.Store(mountPoint, struct{}{})
+			recovered++
+			klog.V(4).Infof("Recovery: restored sidecar tracking for %s", mountPoint)
+		}
+	})
+	klog.Infof("Recovery: restored tracking for %d sidecar volumes", recovered)
 }
