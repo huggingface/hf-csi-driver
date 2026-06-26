@@ -11,11 +11,11 @@ jobs:
     runs-on:
       group: aws-general-8-plus
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9
+      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee
         with:
           version: latest
 
@@ -24,8 +24,8 @@ jobs:
     runs-on:
       group: aws-general-8-plus
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: go test -race -v ./...
@@ -35,8 +35,8 @@ jobs:
     runs-on:
       group: aws-general-8-plus
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - run: CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./cmd/hf-csi-driver/
@@ -46,8 +46,8 @@ jobs:
     runs-on:
       group: aws-general-8-plus
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
       - run: |
           helm lint deploy/helm/hf-csi-driver/
           helm lint deploy/helm/hf-csi-driver/ --set webhook.enabled=true
@@ -57,7 +57,7 @@ jobs:
     runs-on:
       group: aws-general-8-plus
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Resolve hf-mount ref
         id: ref
         run: |
@@ -70,7 +70,7 @@ jobs:
       - run: |
           docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
           docker save hf-mount-fuse:v0.3.1 -o /tmp/hf-mount-fuse.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: hf-mount-fuse-image
           path: /tmp/hf-mount-fuse.tar
@@ -88,8 +88,8 @@ jobs:
       DRIVER_IMAGE: hf-csi-driver:test
       HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
 
       - name: Install kind
         run: |
@@ -98,7 +98,7 @@ jobs:
           chmod +x "$HOME/bin/kind"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: hf-mount-fuse-image
           path: /tmp
@@ -157,8 +157,8 @@ jobs:
       DRIVER_IMAGE: hf-csi-driver:test
       HF_MOUNT_IMAGE: hf-mount-fuse:v0.3.1
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
 
       - name: Install kind
         run: |
@@ -167,7 +167,7 @@ jobs:
           chmod +x "$HOME/bin/kind"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: hf-mount-fuse-image
           path: /tmp

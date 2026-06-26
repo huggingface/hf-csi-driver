@@ -21,7 +21,7 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       released: ${{ steps.release.outputs.released }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Release
         id: release
@@ -35,17 +35,17 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.tag }}
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -63,7 +63,7 @@ jobs:
     needs: [release, docker]
     if: needs.release.outputs.released == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release.outputs.tag }}
 
@@ -86,7 +86,7 @@ jobs:
           yq -i ".webhook.image.tag = \"${TAG}\"" ${HELM_CHART}/values.yaml
           yq -i ".hfMount.image.tag = \"${HFMOUNT_TAG}\"" ${HELM_CHART}/values.yaml
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
