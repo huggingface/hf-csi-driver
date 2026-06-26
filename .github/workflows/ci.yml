@@ -64,9 +64,21 @@ jobs:
           # PR branches that need an unmerged hf-mount change can override
           # the ref by committing a `.hf-mount-ref` file at repo root.
           REF="$(cat .hf-mount-ref 2>/dev/null || echo main)"
+          # Validate ref to prevent command injection
+          if ! echo "$REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "Error: Invalid ref format in .hf-mount-ref"
+            exit 1
+          fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "Using hf-mount ref: $REF"
-      - run: git clone --depth 1 -b "${{ steps.ref.outputs.ref }}" https://github.com/huggingface/hf-mount.git /tmp/hf-mount
+      - run: |
+          REF="${{ steps.ref.outputs.ref }}"
+          # Additional validation before git clone
+          if ! echo "$REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "Error: Invalid ref format"
+            exit 1
+          fi
+          git clone --depth 1 -b "$REF" https://github.com/huggingface/hf-mount.git /tmp/hf-mount
       - run: |
           docker build -t hf-mount-fuse:v0.3.1 /tmp/hf-mount
           docker save hf-mount-fuse:v0.3.1 -o /tmp/hf-mount-fuse.tar
