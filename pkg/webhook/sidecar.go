@@ -55,17 +55,18 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 		},
 	})
 
-	// Hand the pod's termination grace to the sidecar so it can bound its
-	// SIGTERM flush drain (and hard-exit watchdog) just under grace. hf-mount
-	// can't read terminationGracePeriodSeconds itself (not exposed via the
-	// Downward API), and an unbounded drain on a slow Hub/CAS backend would
-	// keep the FUSE connection alive past grace and strand the pod (unkillable),
-	// so we pass it explicitly. Defaults to the Kubernetes default (30s) when
-	// the pod leaves it unset.
-	graceSeconds := int64(30)
-	if pod.Spec.TerminationGracePeriodSeconds != nil {
-		graceSeconds = *pod.Spec.TerminationGracePeriodSeconds
-	}
+	// The sidecar bounds its SIGTERM shutdown (flush drain + hard-exit watchdog)
+	// from this value, so it must be the grace the kubelet actually honors, not
+	// the value the pod author requested. Enforce the minimum grace first and
+	// read the result back: a grace below the minimum would under-budget the
+	// shutdown, so the FUSE daemon would exit while the workload still has the
+	// mount busy and the in-flight I/O (and the kubelet umount) would wedge in
+	// uninterruptible D-state that SIGKILL can't clear, leaving the pod stuck
+	// Terminating. hf-mount can't read terminationGracePeriodSeconds itself (not
+	// exposed via the Downward API), so we pass the effective value explicitly.
+	// ensureTerminationGracePeriod guarantees the field is non-nil afterwards.
+	ensureTerminationGracePeriod(pod)
+	graceSeconds := *pod.Spec.TerminationGracePeriodSeconds
 
 	// Build the native sidecar container (init container with restartPolicy: Always).
 	// Unprivileged: receives fd from CSI driver, does NOT open /dev/fuse.
@@ -115,8 +116,6 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 	// Must be first so the FUSE daemon is running before other init containers
 	// that might access the HF volume.
 	pod.Spec.InitContainers = append([]corev1.Container{sidecar}, pod.Spec.InitContainers...)
-
-	ensureTerminationGracePeriod(pod)
 }
 
 // ensureTerminationGracePeriod raises the pod-level grace period to at least

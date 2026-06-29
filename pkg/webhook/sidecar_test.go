@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -233,5 +234,41 @@ func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 	}
 	if got := pod.Annotations[AnnotationOriginalGracePeriod]; got != "0" {
 		t.Fatalf("want annotation %q=0 after injection, got %q", AnnotationOriginalGracePeriod, got)
+	}
+}
+
+// The sidecar receives the pod's grace via HF_CSI_TERMINATION_GRACE_SECONDS and
+// bounds its SIGTERM shutdown from it, so injectSidecar must hand it the grace
+// the pod is actually given (after the minimum is enforced), not a lower value
+// the pod requested. Too low a value under-budgets the shutdown: the FUSE daemon
+// exits while the mount is still busy and the pod strands in Terminating
+// (unkillable D-state). Pin the injected env to the enforced grace.
+func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+
+	var sc *corev1.Container
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == SidecarContainerName {
+			sc = &pod.Spec.InitContainers[i]
+			break
+		}
+	}
+	if sc == nil {
+		t.Fatalf("sidecar container %q was not injected", SidecarContainerName)
+	}
+
+	graceEnv, found := "", false
+	for _, e := range sc.Env {
+		if e.Name == "HF_CSI_TERMINATION_GRACE_SECONDS" {
+			graceEnv, found = e.Value, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("HF_CSI_TERMINATION_GRACE_SECONDS not set on the injected sidecar")
+	}
+	if want := fmt.Sprintf("%d", MinTerminationGracePeriodSeconds); graceEnv != want {
+		t.Fatalf("want HF_CSI_TERMINATION_GRACE_SECONDS=%s (the raised grace), got %q", want, graceEnv)
 	}
 }
