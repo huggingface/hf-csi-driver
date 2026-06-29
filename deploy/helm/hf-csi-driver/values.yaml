@@ -7,11 +7,12 @@ image:
 hfMount:
   image:
     repository: ghcr.io/huggingface/hf-mount-fuse
-    # Default for source installs; overwritten at release time with the latest hf-mount release tag.
-    # v0.7.2 carries the inval_inode runtime-deadlock fix (huggingface/hf-mount#196,
-    # fixes #195) — the root cause of the stranded-pod incident this PR's node-layer
-    # sweep contains. See issue #48.
-    tag: v0.7.2
+    # Default for source installs; overwritten at release time with the latest
+    # hf-mount release tag (see .github/workflows/release.yml). v0.8.0 floors the
+    # SIGTERM shutdown grace so a too-low HF_CSI_TERMINATION_GRACE_SECONDS can no
+    # longer exit the FUSE daemon while a mount is still busy and strand the pod
+    # in an unkillable D-state (huggingface/hf-mount#202).
+    tag: v0.8.0
     pullPolicy: IfNotPresent
   hostNetwork: true
 
