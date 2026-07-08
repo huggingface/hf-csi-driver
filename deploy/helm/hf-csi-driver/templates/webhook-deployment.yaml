@@ -31,6 +31,9 @@ spec:
             - --webhook-port={{ .Values.webhook.port }}
             - --webhook-cert-dir=/etc/tls-certs
             - --sidecar-image={{ .Values.hfMount.image.repository }}:{{ .Values.hfMount.image.tag }}
+            {{- if .Values.hfMount.logFormat }}
+            - --sidecar-log-format={{ .Values.hfMount.logFormat }}
+            {{- end }}
             - --v={{ .Values.logVerbosity }}
           ports:
             - containerPort: {{ .Values.webhook.port }}

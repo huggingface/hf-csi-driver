@@ -43,9 +43,10 @@ func main() {
 		fuseSweepIntvl   = flag.Duration("fuse-sweep-interval", driver.DefaultFuseSweepInterval, "Interval for the orphaned FUSE connection sweep")
 
 		// Webhook mode flags
-		webhookPort    = flag.Int("webhook-port", 22030, "Webhook server port")
-		webhookCertDir = flag.String("webhook-cert-dir", "/etc/tls-certs", "Directory containing TLS cert and key")
-		sidecarImage   = flag.String("sidecar-image", "", "Container image for the sidecar mounter (required in webhook mode)")
+		webhookPort      = flag.Int("webhook-port", 22030, "Webhook server port")
+		webhookCertDir   = flag.String("webhook-cert-dir", "/etc/tls-certs", "Directory containing TLS cert and key")
+		sidecarImage     = flag.String("sidecar-image", "", "Container image for the sidecar mounter (required in webhook mode)")
+		sidecarLogFormat = flag.String("sidecar-log-format", "", "Optional RUST_LOG_FORMAT value for the sidecar mounter")
 
 		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
@@ -62,7 +63,7 @@ func main() {
 	case "node":
 		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork, *kubeletRoot, *fuseSweepEnabled, *fuseSweepIntvl)
 	case "webhook":
-		runWebhook(*webhookPort, *webhookCertDir, *sidecarImage)
+		runWebhook(*webhookPort, *webhookCertDir, *sidecarImage, *sidecarLogFormat)
 	default:
 		klog.Fatalf("Unknown mode %q (must be 'node' or 'webhook')", *mode)
 	}
@@ -141,7 +142,7 @@ func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullS
 	}
 }
 
-func runWebhook(port int, certDir, sidecarImage string) {
+func runWebhook(port int, certDir, sidecarImage, sidecarLogFormat string) {
 	if sidecarImage == "" {
 		klog.Fatal("--sidecar-image is required in webhook mode")
 	}
@@ -164,7 +165,7 @@ func runWebhook(port int, certDir, sidecarImage string) {
 		klog.Fatalf("Failed to add readyz check: %v", err)
 	}
 
-	config := webhook.Config{SidecarImage: sidecarImage}
+	config := webhook.Config{SidecarImage: sidecarImage, SidecarLogFormat: sidecarLogFormat}
 	decoder := admission.NewDecoder(scheme)
 	injector := webhook.NewInjector(config, mgr.GetAPIReader(), decoder)
 

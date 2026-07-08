@@ -32,6 +32,7 @@ const (
 	// volumeAttrMountMode opts a volume out of sidecar injection when set to
 	// "mountpod". Must stay in sync with pkg/driver: volumeCtxMountMode.
 	volumeAttrMountMode = "mountMode"
+	volumeAttrLogFormat = "logFormat"
 	mountModeMountPod   = "mountpod"
 )
 
@@ -65,6 +66,9 @@ func maxQuantity(a, b *resource.Quantity) *resource.Quantity {
 type Config struct {
 	// SidecarImage is the container image for the sidecar mounter.
 	SidecarImage string
+
+	// SidecarLogFormat is the optional RUST_LOG_FORMAT value for the sidecar mounter.
+	SidecarLogFormat string
 }
 
 // Injector is a mutating admission webhook handler that injects the hf-mount
@@ -92,9 +96,9 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 		return admission.Allowed("not a create")
 	}
 
-	// Count HF CSI volumes (inline or PV-backed) and collect resource hints
+	// Count HF CSI volumes (inline or PV-backed) and collect sidecar hints
 	// from their volumeAttributes.
-	volumeCount, resources := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
+	volumeCount, resources, sidecarLogFormat := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
 	if volumeCount == 0 {
 		return admission.Allowed("no HF CSI volumes")
 	}
@@ -107,7 +111,11 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 	klog.Infof("Injecting sidecar into pod %s/%s", req.Namespace, pod.GenerateName)
 
 	// Inject the sidecar container and shared volume.
-	injectSidecar(pod, i.Config, volumeCount, resources)
+	config := i.Config
+	if config.SidecarLogFormat == "" {
+		config.SidecarLogFormat = sidecarLogFormat
+	}
+	injectSidecar(pod, config, volumeCount, resources)
 
 	marshaledPod, err := json.Marshal(pod)
 	if err != nil {
@@ -118,31 +126,40 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 }
 
 // scanHFCSIVolumes returns the number of HF CSI volumes in the pod that
-// require sidecar injection (inline ephemeral or PV-backed via PVC) and the
-// merged sidecar resource hints collected from their volumeAttributes.
-// Volumes explicitly opted out via mountMode=mountpod are skipped.
-func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, driver.MountResources) {
+// require sidecar injection (inline ephemeral or PV-backed via PVC), plus
+// sidecar hints collected from their volumeAttributes. Volumes explicitly
+// opted out via mountMode=mountpod are skipped.
+func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, driver.MountResources, string) {
 	count := 0
 	var resources driver.MountResources
+	var logFormat string
 	for _, vol := range pod.Spec.Volumes {
 		switch {
 		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
-			if vol.CSI.VolumeAttributes[volumeAttrMountMode] == mountModeMountPod {
+			attrs := vol.CSI.VolumeAttributes
+			if attrs[volumeAttrMountMode] == mountModeMountPod {
 				continue
 			}
 			count++
-			mergeMaxResources(&resources, driver.ParseMountResources(vol.CSI.VolumeAttributes))
+			mergeMaxResources(&resources, driver.ParseMountResources(attrs))
+			if logFormat == "" {
+				logFormat = attrs[volumeAttrLogFormat]
+			}
 		case vol.PersistentVolumeClaim != nil:
 			if pv := i.resolvePVFromPVC(ctx, vol.PersistentVolumeClaim.ClaimName, namespace); pv != nil {
-				if pv.Spec.CSI.VolumeAttributes[volumeAttrMountMode] == mountModeMountPod {
+				attrs := pv.Spec.CSI.VolumeAttributes
+				if attrs[volumeAttrMountMode] == mountModeMountPod {
 					continue
 				}
 				count++
-				mergeMaxResources(&resources, driver.ParseMountResources(pv.Spec.CSI.VolumeAttributes))
+				mergeMaxResources(&resources, driver.ParseMountResources(attrs))
+				if logFormat == "" {
+					logFormat = attrs[volumeAttrLogFormat]
+				}
 			}
 		}
 	}
-	return count, resources
+	return count, resources, logFormat
 }
 
 // resolvePVFromPVC returns the PV backing the given PVC if (and only if) it
