@@ -191,11 +191,11 @@ func (m *PodMounter) Start(stopCh <-chan struct{}) {
 	go m.periodicCleanup(stopCh)
 }
 
-// periodicCleanup runs every 2 minutes to find and clean up orphaned mounts.
+// periodicCleanup runs every 5 minutes to find and clean up orphaned mounts.
 // This catches cases missed by event handlers (e.g. pod deleted while refs
 // were still present, or events missed during driver restart).
 func (m *PodMounter) periodicCleanup(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	for {

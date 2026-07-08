@@ -14,7 +14,7 @@ import (
 
 const (
 	// DefaultVolDataReconcileInterval is how often the reconciler sweeps.
-	DefaultVolDataReconcileInterval = 2 * time.Minute
+	DefaultVolDataReconcileInterval = 5 * time.Minute
 
 	// volDataStaleThreshold: only repair a volume dir whose vol_data.json has
 	// been missing at least this long. A healthy mount gets vol_data.json
