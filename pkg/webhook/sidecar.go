@@ -68,6 +68,14 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 	ensureTerminationGracePeriod(pod)
 	graceSeconds := *pod.Spec.TerminationGracePeriodSeconds
 
+	sidecarEnv := []corev1.EnvVar{
+		{Name: "HOME", Value: "/tmp"},
+		{Name: "HF_CSI_TERMINATION_GRACE_SECONDS", Value: fmt.Sprintf("%d", graceSeconds)},
+	}
+	if config.SidecarLogFormat != "" {
+		sidecarEnv = append(sidecarEnv, corev1.EnvVar{Name: "RUST_LOG_FORMAT", Value: config.SidecarLogFormat})
+	}
+
 	// Build the native sidecar container (init container with restartPolicy: Always).
 	// Unprivileged: receives fd from CSI driver, does NOT open /dev/fuse.
 	sidecar := corev1.Container{
@@ -77,10 +85,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 		RestartPolicy:   ptr.To(corev1.ContainerRestartPolicyAlways),
 		Command:         []string{"hf-mount-fuse-sidecar"},
 		Args:            []string{"--tmp-dir=" + TmpVolumeMountPath, fmt.Sprintf("--expected-mounts=%d", volumeCount)},
-		Env: []corev1.EnvVar{
-			{Name: "HOME", Value: "/tmp"},
-			{Name: "HF_CSI_TERMINATION_GRACE_SECONDS", Value: fmt.Sprintf("%d", graceSeconds)},
-		},
+		Env:             sidecarEnv,
 		SecurityContext: &corev1.SecurityContext{
 			RunAsNonRoot:             ptr.To(true),
 			RunAsUser:                ptr.To(int64(65534)),
