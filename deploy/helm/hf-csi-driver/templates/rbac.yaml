@@ -5,9 +5,13 @@ metadata:
   labels:
     {{- include "hf-csi-driver.labels" . | nindent 4 }}
 rules:
+  # Cluster-wide READ on pods only. The volume reconciler lists pods across all
+  # namespaces (filtered by node) to discover node-owned volumes, and the node
+  # informer watches pods. The driver never creates or deletes pods outside its
+  # own release namespace, so no cluster-wide write is granted here.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get"]
@@ -31,4 +35,38 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: {{ include "hf-csi-driver.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+---
+# Mount-pod lifecycle is confined to the driver's own release namespace: the
+# node DaemonSet runs the pod-mounter with its namespace set to the release
+# namespace, and every pod Create/Delete in pkg/driver/podmounter.go targets
+# that namespace. Granting create/delete here (namespaced) instead of on the
+# ClusterRole keeps mountpod mode (and the sidecar-mode fallback) working while
+# removing cluster-wide pod creation from the driver's ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-mountpods
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "hf-csi-driver.fullname" . }}-mountpods
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hf-csi-driver.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "hf-csi-driver.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "hf-csi-driver.fullname" . }}-mountpods
   apiGroup: rbac.authorization.k8s.io
