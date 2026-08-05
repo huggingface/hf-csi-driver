@@ -158,7 +158,8 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 					continue
 				}
 				count++
-				if !volumeIsReadOnly(&pv.Spec.CSI.ReadOnly, attrs) {
+				ro := vol.PersistentVolumeClaim.ReadOnly || pv.Spec.CSI.ReadOnly || pvMountOptionsReadOnly(pv)
+				if !volumeIsReadOnly(&ro, attrs) {
 					allReadOnly = false
 				}
 				mergeMaxResources(&resources, driver.ParseMountResources(attrs))
@@ -178,6 +179,17 @@ func volumeIsReadOnly(readOnly *bool, attrs map[string]string) bool {
 		return true
 	}
 	return attrs[volumeAttrSourceType] == "repo"
+}
+
+// pvMountOptionsReadOnly reports whether the PV's mountOptions force the
+// mount read-only (they are passed through to hf-mount as flags).
+func pvMountOptionsReadOnly(pv *corev1.PersistentVolume) bool {
+	for _, opt := range pv.Spec.MountOptions {
+		if opt == "read-only" || opt == "--read-only" || opt == "ro" {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvePVFromPVC returns the PV backing the given PVC if (and only if) it

@@ -463,8 +463,12 @@ func (m *PodMounter) dropDeadPodRefs(refs []string) []string {
 			continue
 		}
 		klog.Warningf("Force-unmounting orphan bind %s (pod UID %s no longer exists)", ref, uid)
-		if err := fuseUnmount(ref); err != nil {
-			klog.Warningf("Force umount of orphan bind %s failed: %v", ref, err)
+		// Repaired targets carry a stack of binds; pop them all, otherwise
+		// the leaked layers survive precisely when no NodeUnpublishVolume
+		// will ever come for this target.
+		unmountAll(ref)
+		if mounted, err := m.checker.IsMountPoint(ref); err == nil && mounted {
+			klog.Warningf("Force umount of orphan bind %s left it mounted", ref)
 			alive = append(alive, ref)
 			continue
 		}
@@ -813,11 +817,17 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	if err := m.waitForPodRunning(ctx, podName); err != nil {
 		// A pure readiness timeout means the pod is still coming up (e.g. a
 		// slow image pull). Keep it so the next kubelet retry resumes the
-		// pull instead of restarting it from zero.
+		// pull instead of restarting it from zero. Any other failure is
+		// fatal for this pod — delete it even when this attempt merely
+		// reused it (createdPod == false), or a retained pod that later
+		// crash-loops would be reused by every retry forever.
 		if goerrors.Is(err, errWaitTimeout) {
 			cleanupPod = false
 			cleanupCRD = false
 			klog.Warningf("Mount pod %s not running yet; keeping it for the next kubelet retry", podName)
+		} else {
+			cleanupPod = true
+			cleanupCRD = true
 		}
 		return fmt.Errorf("mount pod %s did not become running: %w", podName, err)
 	}
@@ -826,11 +836,16 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		// A pure readiness timeout means the mount pod is alive and still
 		// working (e.g. Hub rate limiting slows its startup calls). Keep the
 		// pod and CRD so the next kubelet retry resumes its progress instead
-		// of deleting it and restarting the whole startup sequence from zero.
+		// of deleting it and restarting the whole startup sequence from
+		// zero. Any other failure (crash loop, terminal phase, deletion) is
+		// fatal — replace the pod even when it was merely reused.
 		if goerrors.Is(err, errWaitTimeout) {
 			cleanupPod = false
 			cleanupCRD = false
 			klog.Warningf("Mount pod %s not ready within %s; keeping it for the next kubelet retry", podName, m.mountReadyTimeout)
+		} else {
+			cleanupPod = true
+			cleanupCRD = true
 		}
 		return fmt.Errorf("FUSE mount did not appear at %s: %w", mountPath, err)
 	}
@@ -903,7 +918,7 @@ func (m *PodMounter) Unmount(target string) error {
 		mounted, _ := m.checker.IsMountPoint(derivedSource)
 		if mounted {
 			klog.Infof("Untracked target %s: found FUSE mount at %s, cleaning up pod %s", target, derivedSource, podName)
-			_ = fuseUnmount(derivedSource)
+			unmountAll(derivedSource)
 			_ = m.client.CoreV1().Pods(m.namespace).Delete(context.TODO(), podName, metav1.DeleteOptions{})
 			logCRDError("delete", crdName, m.crd.delete(context.TODO(), crdName))
 		}
@@ -926,10 +941,9 @@ func (m *PodMounter) Unmount(target string) error {
 	klog.Infof("Deleting mount pod %s (no more references)", podName)
 
 	// Unmount the FUSE source before deleting the pod to avoid a stale mount
-	// window between pod deletion and informer cleanup.
-	if err := fuseUnmount(source); err != nil {
-		klog.V(4).Infof("Unmount FUSE source %s: %v", source, err)
-	}
+	// window between pod deletion and informer cleanup. Restarted daemons
+	// stack a fresh FUSE mount over the dead one, so pop the whole stack.
+	unmountAll(source)
 
 	if err := m.client.CoreV1().Pods(m.namespace).Delete(context.TODO(), podName, metav1.DeleteOptions{}); err != nil {
 		if !errors.IsNotFound(err) {
