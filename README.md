@@ -183,6 +183,12 @@ spec:
         - name: hf-data
           mountPath: /data
           readOnly: true
+          # Strongly recommended with mountMode: mountpod. If the FUSE daemon
+          # dies (OOM, crash), the driver recreates the mount pod and re-binds
+          # the volume on the host — HostToContainer lets the repaired mount
+          # propagate into this running container. Without it the container
+          # keeps a dead mount (ENOTCONN) until the pod is recreated.
+          mountPropagation: HostToContainer
   volumes:
     - name: hf-data
       persistentVolumeClaim:
