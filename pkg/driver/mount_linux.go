@@ -24,7 +24,7 @@ func boundToCurrentSource(target, source string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// mountinfo fields: id parent major:minor root mountpoint ...
 	// The LAST entry for a mountpoint is the topmost mount there. Identify a
