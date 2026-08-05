@@ -19,17 +19,44 @@ const (
 // pod or injected sidecar) when the user does not set cpuRequest /
 // memoryRequest in volumeAttributes.
 //
-// The memory request must reflect what a writing mount actually holds in
-// RAM: under a stalled CAS upload, hf-mount's write pipeline plateaus at
-// ~1.8GiB (measured: in-flight FUSE writes + xet-core ingestion buffers +
-// serialized xorbs). A 32Mi request made the FUSE daemon the OOM killer's
-// first pick under node memory pressure, killing the mount mid-write
-// (incident 2026-08-05). Write-heavy volumes should also set memoryLimit
-// >= 3Gi in volumeAttributes if a limit is desired at all.
+// The memory request for a WRITABLE mount must reflect what the daemon
+// actually holds in RAM: under a stalled CAS upload, hf-mount's write
+// pipeline plateaus at ~1.8GiB (measured: in-flight FUSE writes + xet-core
+// ingestion buffers + serialized xorbs). A 32Mi request made the FUSE daemon
+// the OOM killer's first pick under node memory pressure, killing the mount
+// mid-write (incident 2026-08-05). Note a request only lowers OOM-kill
+// preference and reserves schedulable memory — it does not cap usage; set
+// memoryLimit >= 3Gi in volumeAttributes if a cap is wanted at all.
+//
+// Read-only mounts never touch the write pipeline, so reserving 2Gi for them
+// would only cut node density (~64x over-reservation per mount).
 var (
-	DefaultMountCPURequest    = resource.MustParse("10m")
-	DefaultMountMemoryRequest = resource.MustParse("2Gi")
+	DefaultMountCPURequest            = resource.MustParse("10m")
+	DefaultMountMemoryRequest         = resource.MustParse("2Gi")
+	DefaultMountMemoryRequestReadOnly = resource.MustParse("128Mi")
 )
+
+// DefaultMemoryRequestFor returns the default memory request for a mount
+// serving the given access mode.
+func DefaultMemoryRequestFor(readOnly bool) resource.Quantity {
+	if readOnly {
+		return DefaultMountMemoryRequestReadOnly
+	}
+	return DefaultMountMemoryRequest
+}
+
+// ReadOnlyFromArgs reports whether a built hf-mount argument list describes a
+// read-only mount (used where MountOptions are no longer available, e.g. when
+// rebuilding a mount pod from the HFMount CRD's stored args). Repo sources
+// are structurally read-only.
+func ReadOnlyFromArgs(args []string) bool {
+	for _, a := range args {
+		if a == "--read-only" || a == "repo" {
+			return true
+		}
+	}
+	return false
+}
 
 // MountResources carries already-parsed resource overrides. A nil field
 // means "not set by the user"; the caller's defaults win.

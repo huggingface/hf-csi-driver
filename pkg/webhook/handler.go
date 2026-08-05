@@ -31,9 +31,10 @@ const (
 
 	// volumeAttrMountMode opts a volume out of sidecar injection when set to
 	// "mountpod". Must stay in sync with pkg/driver: volumeCtxMountMode.
-	volumeAttrMountMode = "mountMode"
-	volumeAttrLogFormat = "logFormat"
-	mountModeMountPod   = "mountpod"
+	volumeAttrMountMode  = "mountMode"
+	volumeAttrLogFormat  = "logFormat"
+	volumeAttrSourceType = "sourceType"
+	mountModeMountPod    = "mountpod"
 )
 
 // mergeMaxResources combines another per-volume hint into dst by taking, per
@@ -98,7 +99,7 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 
 	// Count HF CSI volumes (inline or PV-backed) and collect sidecar hints
 	// from their volumeAttributes.
-	volumeCount, resources, sidecarLogFormat := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
+	volumeCount, resources, sidecarLogFormat, allReadOnly := i.scanHFCSIVolumes(ctx, pod, req.Namespace)
 	if volumeCount == 0 {
 		return admission.Allowed("no HF CSI volumes")
 	}
@@ -115,7 +116,7 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 	if config.SidecarLogFormat == "" {
 		config.SidecarLogFormat = sidecarLogFormat
 	}
-	injectSidecar(pod, config, volumeCount, resources)
+	injectSidecar(pod, config, volumeCount, resources, allReadOnly)
 
 	marshaledPod, err := json.Marshal(pod)
 	if err != nil {
@@ -127,12 +128,14 @@ func (i *Injector) Handle(ctx context.Context, req admission.Request) admission.
 
 // scanHFCSIVolumes returns the number of HF CSI volumes in the pod that
 // require sidecar injection (inline ephemeral or PV-backed via PVC), plus
-// sidecar hints collected from their volumeAttributes. Volumes explicitly
+// sidecar hints collected from their volumeAttributes and whether every such
+// volume is read-only (repos are structurally read-only). Volumes explicitly
 // opted out via mountMode=mountpod are skipped.
-func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, driver.MountResources, string) {
+func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namespace string) (int, driver.MountResources, string, bool) {
 	count := 0
 	var resources driver.MountResources
 	var logFormat string
+	allReadOnly := true
 	for _, vol := range pod.Spec.Volumes {
 		switch {
 		case vol.CSI != nil && vol.CSI.Driver == CSIDriverName:
@@ -141,6 +144,9 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 				continue
 			}
 			count++
+			if !volumeIsReadOnly(vol.CSI.ReadOnly, attrs) {
+				allReadOnly = false
+			}
 			mergeMaxResources(&resources, driver.ParseMountResources(attrs))
 			if logFormat == "" {
 				logFormat = attrs[volumeAttrLogFormat]
@@ -152,6 +158,9 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 					continue
 				}
 				count++
+				if !volumeIsReadOnly(&pv.Spec.CSI.ReadOnly, attrs) {
+					allReadOnly = false
+				}
 				mergeMaxResources(&resources, driver.ParseMountResources(attrs))
 				if logFormat == "" {
 					logFormat = attrs[volumeAttrLogFormat]
@@ -159,7 +168,16 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 			}
 		}
 	}
-	return count, resources, logFormat
+	return count, resources, logFormat, allReadOnly
+}
+
+// volumeIsReadOnly reports whether an HF CSI volume can never write: either
+// explicitly read-only or backed by a repo source (always read-only).
+func volumeIsReadOnly(readOnly *bool, attrs map[string]string) bool {
+	if readOnly != nil && *readOnly {
+		return true
+	}
+	return attrs[volumeAttrSourceType] == "repo"
 }
 
 // resolvePVFromPVC returns the PV backing the given PVC if (and only if) it

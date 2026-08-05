@@ -104,11 +104,8 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 				// (republish path will check health via error file).
 				mounted = true
 			} else {
-				// Leave the dead mount in place and let the mountpod path
-				// stack a fresh bind over it: unmounting here would destroy
-				// the propagation peer group that a running app container's
-				// rslave copy is attached to, making the repaired mount
-				// invisible until the app pod is recreated.
+				// Leave the dead mount in place: the mountpod path stacks a
+				// fresh bind over it (propagation rationale on stackBind).
 				klog.Warningf("Stale mount detected at %s; will stack a fresh bind over it", target)
 				mounted = false
 			}
@@ -162,9 +159,12 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
-	// Create target directory.
+	// Create target directory. Tolerate failure on an existing (possibly
+	// dead) mountpoint — the stale-mount republish path above deliberately
+	// leaves the corpse in place for the mounter to stack a fresh bind over
+	// (see stackBind), and MkdirAll cannot succeed on it.
 	if err := os.MkdirAll(target, 0750); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create target directory %s: %v", target, err)
+		klog.V(4).Infof("MkdirAll(%s): %v (continuing; mounter can stack over an existing mountpoint)", target, err)
 	}
 
 	// Extract volume mount group (fsGroup) from the CSI request.

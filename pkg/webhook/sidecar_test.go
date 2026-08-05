@@ -228,7 +228,7 @@ func TestEnsureTerminationGracePeriod_EqualMinIsKept(t *testing.T) {
 // the same admission patch.
 func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
-	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{}, false)
 	if pod.Spec.TerminationGracePeriodSeconds == nil ||
 		*pod.Spec.TerminationGracePeriodSeconds != MinTerminationGracePeriodSeconds {
 		t.Fatalf("want grace=%d after injection, got %v", MinTerminationGracePeriodSeconds, pod.Spec.TerminationGracePeriodSeconds)
@@ -246,7 +246,7 @@ func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 // (unkillable D-state). Pin the injected env to the enforced grace.
 func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
-	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{}, false)
 
 	var sc *corev1.Container
 	for i := range pod.Spec.InitContainers {
@@ -276,7 +276,7 @@ func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
 
 func TestInjectSidecar_PassesLogFormatToSidecar(t *testing.T) {
 	pod := &corev1.Pod{}
-	injectSidecar(pod, Config{SidecarImage: "test:latest", SidecarLogFormat: "json"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest", SidecarLogFormat: "json"}, 1, driver.MountResources{}, false)
 
 	var sc *corev1.Container
 	for i := range pod.Spec.InitContainers {
@@ -315,7 +315,7 @@ func TestScanHFCSIVolumes_ReturnsLogFormatFromVolumeAttributes(t *testing.T) {
 		},
 	}}}
 
-	count, _, logFormat := (&Injector{}).scanHFCSIVolumes(context.Background(), pod, "hub")
+	count, _, logFormat, _ := (&Injector{}).scanHFCSIVolumes(context.Background(), pod, "hub")
 	if count != 1 {
 		t.Fatalf("want 1 HF CSI volume, got %d", count)
 	}

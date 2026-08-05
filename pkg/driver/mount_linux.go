@@ -3,7 +3,9 @@
 package driver
 
 import (
+	"bufio"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -12,16 +14,35 @@ func bindMount(source, target string) error {
 	return syscall.Mount(source, target, "", syscall.MS_BIND, "")
 }
 
-// isMountStale checks if a mount at target is stale (FUSE transport dead).
-func isMountStale(target string) bool {
-	_, err := os.Stat(target)
-	if err == nil {
+// boundToCurrentSource reports whether target's topmost mount is backed by
+// the same superblock as source's topmost mount, per /proc/self/mountinfo.
+// mountinfo is never served from the kernel attribute cache, so — unlike a
+// stat() probe — it cannot mistake a dead FUSE bind for a live one right
+// after the daemon dies.
+func boundToCurrentSource(target, source string) bool {
+	f, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
 		return false
 	}
-	if pe, ok := err.(*os.PathError); ok {
-		if pe.Err == syscall.ENOTCONN || pe.Err == syscall.EIO {
-			return true
+	defer f.Close()
+
+	// mountinfo fields: id parent major:minor root mountpoint ...
+	// The LAST entry for a mountpoint is the topmost mount there. Identify a
+	// mount's backing by (major:minor, root).
+	var targetTop, sourceTop string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		backing := fields[2] + " " + fields[3]
+		switch fields[4] {
+		case target:
+			targetTop = backing
+		case source:
+			sourceTop = backing
 		}
 	}
-	return false
+	return targetTop != "" && targetTop == sourceTop
 }
