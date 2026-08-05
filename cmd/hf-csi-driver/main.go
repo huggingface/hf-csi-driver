@@ -37,6 +37,7 @@ func main() {
 		mountPullSecrets = flag.String("mount-pull-secrets", "", "Comma-separated image pull secret names for mount pods")
 		mountServiceAcct = flag.String("mount-service-account", "hf-csi-driver", "Service account for mount pods")
 		mountHostNetwork = flag.Bool("mount-host-network", true, "Enable hostNetwork on mount pods")
+		mountReadyWait   = flag.Duration("mount-ready-timeout", 3*time.Minute, "How long NodePublishVolume waits for the mount pod's FUSE mount to appear before returning (pod is kept for the next retry)")
 		namespace        = flag.String("namespace", "kube-system", "Namespace for mount pods")
 		kubeletRoot      = flag.String("kubelet-root", "/var/lib/kubelet", "Kubelet root dir; scanned by the vol_data.json reconciler")
 		fuseSweepEnabled = flag.Bool("fuse-sweep-enabled", true, "Periodically abort orphaned FUSE connections whose daemon is gone (requires hostPID)")
@@ -61,7 +62,7 @@ func main() {
 
 	switch *mode {
 	case "node":
-		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork, *kubeletRoot, *fuseSweepEnabled, *fuseSweepIntvl)
+		runNode(*endpoint, *nodeID, *cacheDir, *mountImage, *mountPullPolicy, *mountPullSecrets, *mountServiceAcct, *namespace, *mountHostNetwork, *mountReadyWait, *kubeletRoot, *fuseSweepEnabled, *fuseSweepIntvl)
 	case "webhook":
 		runWebhook(*webhookPort, *webhookCertDir, *sidecarImage, *sidecarLogFormat)
 	default:
@@ -69,7 +70,7 @@ func main() {
 	}
 }
 
-func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork bool, kubeletRoot string, fuseSweepEnabled bool, fuseSweepInterval time.Duration) {
+func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullSecrets, mountServiceAcct, namespace string, mountHostNetwork bool, mountReadyTimeout time.Duration, kubeletRoot string, fuseSweepEnabled bool, fuseSweepInterval time.Duration) {
 	if nodeID == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
@@ -105,7 +106,7 @@ func runNode(endpoint, nodeID, cacheDir, mountImage, mountPullPolicy, mountPullS
 		}
 	}
 
-	mounter := driver.NewPodMounter(client, dynClient, namespace, nodeID, mountImage, corev1.PullPolicy(mountPullPolicy), pullSecrets, mountServiceAcct, cacheDir, mountHostNetwork)
+	mounter := driver.NewPodMounter(client, dynClient, namespace, nodeID, mountImage, corev1.PullPolicy(mountPullPolicy), pullSecrets, mountServiceAcct, cacheDir, mountHostNetwork, mountReadyTimeout)
 	drv := driver.NewDriver(endpoint, nodeID, cacheDir, mounter)
 
 	// Reconcile stuck CSI volume dirs (missing vol_data.json) left by pods

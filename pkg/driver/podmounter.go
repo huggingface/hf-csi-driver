@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"crypto/sha256"
+	goerrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,20 +24,24 @@ import (
 )
 
 const (
-	mountPodPrefix     = "hf-mount-"
-	labelApp           = "hf.csi.huggingface.co/app"
-	labelAppValue      = "hf-mount"
-	labelVolumeID      = "hf.csi.huggingface.co/volume-id"
-	labelNode          = "hf.csi.huggingface.co/node"
-	annotSourceType    = "hf.csi.huggingface.co/source-type"
-	annotSourceID      = "hf.csi.huggingface.co/source-id"
-	annotMountPath     = "hf.csi.huggingface.co/mount-path"
-	mountBaseDir       = "/var/lib/hf-csi-driver/mnt"
-	podReadyTimeout    = 2 * time.Minute
-	podReadyPoll       = time.Second
-	mountReadyPollPM   = 500 * time.Millisecond
-	mountTimeoutPM     = 60 * time.Second
-	podDeletionTimeout = 60 * time.Second
+	mountPodPrefix   = "hf-mount-"
+	labelApp         = "hf.csi.huggingface.co/app"
+	labelAppValue    = "hf-mount"
+	labelVolumeID    = "hf.csi.huggingface.co/volume-id"
+	labelNode        = "hf.csi.huggingface.co/node"
+	annotSourceType  = "hf.csi.huggingface.co/source-type"
+	annotSourceID    = "hf.csi.huggingface.co/source-id"
+	annotMountPath   = "hf.csi.huggingface.co/mount-path"
+	mountBaseDir     = "/var/lib/hf-csi-driver/mnt"
+	podReadyTimeout  = 2 * time.Minute
+	podReadyPoll     = time.Second
+	mountReadyPollPM = 500 * time.Millisecond
+	// Default for --mount-ready-timeout. Must comfortably exceed the mount
+	// pod's worst-case startup Hub calls: under 429 rate limiting a single
+	// call retries with RateLimit-hinted sleeps of up to 2x30s, and there
+	// are several such calls before the FUSE mount appears.
+	defaultMountReadyTimeout = 3 * time.Minute
+	podDeletionTimeout       = 60 * time.Second
 )
 
 // refMutex is a reference-counted mutex that can be safely cleaned up
@@ -63,8 +68,10 @@ type PodMounter struct {
 	serviceAccount   string
 	cacheDir         string
 	hostNetwork      bool
-	checker          mount.Interface
-	crd              *hfMountClient
+	// mountReadyTimeout bounds waitForMount; zero means defaultMountReadyTimeout.
+	mountReadyTimeout time.Duration
+	checker           mount.Interface
+	crd               *hfMountClient
 
 	// binds tracks target -> source mount path for bind-mounted volumes.
 	binds map[string]string
@@ -77,23 +84,24 @@ type PodMounter struct {
 	sourceLocks map[string]*refMutex
 }
 
-func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image string, pullPolicy corev1.PullPolicy, pullSecrets []corev1.LocalObjectReference, serviceAccount, cacheDir string, hostNetwork bool) *PodMounter {
+func NewPodMounter(client kubernetes.Interface, dynClient dynamic.Interface, namespace, nodeID, image string, pullPolicy corev1.PullPolicy, pullSecrets []corev1.LocalObjectReference, serviceAccount, cacheDir string, hostNetwork bool, mountReadyTimeout time.Duration) *PodMounter {
 	checker := mount.New("")
 	return &PodMounter{
-		client:           client,
-		namespace:        namespace,
-		nodeID:           nodeID,
-		image:            image,
-		imagePullPolicy:  pullPolicy,
-		imagePullSecrets: pullSecrets,
-		serviceAccount:   serviceAccount,
-		cacheDir:         cacheDir,
-		hostNetwork:      hostNetwork,
-		checker:          checker,
-		crd:              newHFMountClient(dynClient, namespace),
-		binds:            make(map[string]string),
-		sourceLocks:      make(map[string]*refMutex),
-		getMountRefs:     checker.GetMountRefs,
+		client:            client,
+		namespace:         namespace,
+		nodeID:            nodeID,
+		image:             image,
+		imagePullPolicy:   pullPolicy,
+		imagePullSecrets:  pullSecrets,
+		serviceAccount:    serviceAccount,
+		cacheDir:          cacheDir,
+		hostNetwork:       hostNetwork,
+		mountReadyTimeout: mountReadyTimeout,
+		checker:           checker,
+		crd:               newHFMountClient(dynClient, namespace),
+		binds:             make(map[string]string),
+		sourceLocks:       make(map[string]*refMutex),
+		getMountRefs:      checker.GetMountRefs,
 	}
 }
 
@@ -637,24 +645,35 @@ func (m *PodMounter) rebindTargets(mountPath string) {
 			continue
 		}
 
-		// Check if the bind mount is still valid: must be a mount point AND not stale.
-		targetMounted, mountErr := m.checker.IsMountPoint(target)
-		if mountErr == nil && targetMounted && !isMountStale(target) {
-			klog.V(4).Infof("Bind mount at %s still valid", target)
-			continue
-		}
-
+		// Do NOT trust a staleness probe here: right after the FUSE daemon
+		// dies, stat() on the dead bind can still SUCCEED from the kernel's
+		// attribute cache (metadata_ttl is 10s by default), making the dead
+		// mount look "still valid" and skipping the one rebind opportunity
+		// this restart event gives us. The mount pod's container just
+		// restarted, so the previous superblock is gone either way — rebind
+		// unconditionally; stacking over a healthy bind is harmless.
 		klog.Infof("Re-binding %s -> %s after pod restart", mountPath, target)
-		_ = fuseUnmount(target)
-		if err := os.MkdirAll(target, 0750); err != nil {
-			klog.Warningf("Failed to create target directory %s: %v", target, err)
-			continue
-		}
+		// Stack the fresh bind ON TOP of the dead mount instead of unmounting
+		// it first. Unmounting destroys the propagation peer group that the
+		// app container's rslave copy (mountPropagation: HostToContainer)
+		// hangs off, so a bind made afterwards never reaches the running
+		// container. Stacking propagates: the container sees the repaired
+		// mount without being recreated. The buried dead mount is kept alive
+		// by the stack and cleaned up on unpublish (fuseSweeper aborts its
+		// connection so it cannot wedge node-wide sync).
 		if err := bindMount(mountPath, target); err != nil {
-			klog.Warningf("Failed to re-bind %s -> %s: %v", mountPath, target, err)
-		} else {
-			klog.Infof("Successfully re-bound %s -> %s", mountPath, target)
+			klog.Warningf("Failed to stack re-bind %s -> %s (%v); retrying after unmount", mountPath, target, err)
+			_ = fuseUnmount(target)
+			if mkErr := os.MkdirAll(target, 0750); mkErr != nil {
+				klog.Warningf("Failed to create target directory %s: %v", target, mkErr)
+				continue
+			}
+			if err := bindMount(mountPath, target); err != nil {
+				klog.Warningf("Failed to re-bind %s -> %s: %v", mountPath, target, err)
+				continue
+			}
 		}
+		klog.Infof("Successfully re-bound %s -> %s", mountPath, target)
 	}
 }
 
@@ -755,11 +774,26 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	}
 
 	if err := m.waitForMount(mountPath, podName); err != nil {
+		// A pure readiness timeout means the mount pod is alive and still
+		// working (e.g. Hub rate limiting slows its startup calls). Keep the
+		// pod and CRD so the next kubelet retry resumes its progress instead
+		// of deleting it and restarting the whole startup sequence from zero.
+		var slow *mountWaitTimeoutError
+		if goerrors.As(err, &slow) {
+			cleanupPod = false
+			cleanupCRD = false
+			klog.Warningf("Mount pod %s not ready within %s; keeping it for the next kubelet retry", podName, m.effectiveMountReadyTimeout())
+		}
 		return fmt.Errorf("FUSE mount did not appear at %s: %w", mountPath, err)
 	}
 
+	// On the stale-mount republish path the target is an existing (dead)
+	// FUSE mountpoint: MkdirAll fails there with EEXIST/ENOTCONN flavors
+	// depending on attr-cache state. That's fine — the bind below stacks
+	// over it on purpose (see rebindTargets for the propagation rationale),
+	// and bindMount reports the real error if the path is genuinely unusable.
 	if err := os.MkdirAll(target, 0750); err != nil {
-		return fmt.Errorf("failed to create target directory %s: %w", target, err)
+		klog.V(4).Infof("MkdirAll(%s): %v (continuing; bind will stack over the existing mountpoint)", target, err)
 	}
 	if err := bindMount(mountPath, target); err != nil {
 		return fmt.Errorf("bind mount %s -> %s failed: %w", mountPath, target, err)
@@ -1171,8 +1205,23 @@ func (m *PodMounter) waitForPodRunning(ctx context.Context, name string) error {
 	}
 }
 
+// mountWaitTimeoutError marks a pure readiness timeout: the mount pod is
+// still progressing (not crashed, deleted, or terminal), so callers should
+// keep it for the next retry instead of destroying it.
+type mountWaitTimeoutError struct{ err error }
+
+func (e *mountWaitTimeoutError) Error() string { return e.err.Error() }
+func (e *mountWaitTimeoutError) Unwrap() error { return e.err }
+
+func (m *PodMounter) effectiveMountReadyTimeout() time.Duration {
+	if m.mountReadyTimeout > 0 {
+		return m.mountReadyTimeout
+	}
+	return defaultMountReadyTimeout
+}
+
 func (m *PodMounter) waitForMount(path, podName string) error {
-	deadline := time.After(mountTimeoutPM)
+	deadline := time.After(m.effectiveMountReadyTimeout())
 	ticker := time.NewTicker(mountReadyPollPM)
 	defer ticker.Stop()
 
@@ -1181,9 +1230,9 @@ func (m *PodMounter) waitForMount(path, podName string) error {
 		select {
 		case <-deadline:
 			if lastErr != nil {
-				return fmt.Errorf("timeout waiting for mount at %s: %w", path, lastErr)
+				return &mountWaitTimeoutError{fmt.Errorf("timeout waiting for mount at %s: %w", path, lastErr)}
 			}
-			return fmt.Errorf("timeout waiting for mount at %s", path)
+			return &mountWaitTimeoutError{fmt.Errorf("timeout waiting for mount at %s", path)}
 		case <-ticker.C:
 			mounted, err := m.checker.IsMountPoint(path)
 			if err != nil {

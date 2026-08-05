@@ -104,10 +104,12 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 				// (republish path will check health via error file).
 				mounted = true
 			} else {
-				klog.Warningf("Stale mount detected at %s, force unmounting", target)
-				if umountErr := d.mounter.Unmount(target); umountErr != nil {
-					return nil, status.Errorf(codes.Internal, "failed to clean stale mount at %s: %v", target, umountErr)
-				}
+				// Leave the dead mount in place and let the mountpod path
+				// stack a fresh bind over it: unmounting here would destroy
+				// the propagation peer group that a running app container's
+				// rslave copy is attached to, making the repaired mount
+				// invisible until the app pod is recreated.
+				klog.Warningf("Stale mount detected at %s; will stack a fresh bind over it", target)
 				mounted = false
 			}
 		} else if !os.IsNotExist(err) {
