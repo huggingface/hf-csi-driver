@@ -22,11 +22,11 @@ const (
 // The memory request for a WRITABLE mount must reflect what the daemon
 // actually holds in RAM: under a stalled CAS upload, hf-mount's write
 // pipeline plateaus at ~1.8GiB (measured: in-flight FUSE writes + xet-core
-// ingestion buffers + serialized xorbs). A 32Mi request made the FUSE daemon
-// the OOM killer's first pick under node memory pressure, killing the mount
-// mid-write (incident 2026-08-05). Note a request only lowers OOM-kill
-// preference and reserves schedulable memory — it does not cap usage; set
-// memoryLimit >= 3Gi in volumeAttributes if a cap is wanted at all.
+// ingestion buffers + serialized xorbs). A smaller request makes the FUSE
+// daemon the OOM killer's first pick under node memory pressure, killing the
+// mount mid-write. Note a request only lowers OOM-kill preference and
+// reserves schedulable memory — it does not cap usage; set memoryLimit
+// >= 3Gi in volumeAttributes if a cap is wanted at all.
 //
 // Read-only mounts never touch the write pipeline, so reserving 2Gi for them
 // would only cut node density (~64x over-reservation per mount).
