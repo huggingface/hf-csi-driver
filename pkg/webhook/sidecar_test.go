@@ -28,7 +28,7 @@ func TestBuildSidecarResources_Defaults(t *testing.T) {
 	if got, want := r.Requests[corev1.ResourceCPU], resource.MustParse("10m"); got.Cmp(want) != 0 {
 		t.Fatalf("default cpu request: got %s, want %s", got.String(), want.String())
 	}
-	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("32Mi"); got.Cmp(want) != 0 {
+	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("2Gi"); got.Cmp(want) != 0 {
 		t.Fatalf("default memory request: got %s, want %s", got.String(), want.String())
 	}
 	if len(r.Limits) != 0 {
@@ -117,7 +117,7 @@ func TestResourcesMergeMax_TakesMaxAndIsOrderIndependent(t *testing.T) {
 // request > limit (apiserver would reject the pod). We clamp request down
 // to the limit and log a warning.
 func TestBuildSidecarResources_RequestClampedToLimit(t *testing.T) {
-	// memoryLimit: 16Mi is smaller than the default 32Mi request.
+	// memoryLimit: 16Mi is smaller than the default 2Gi request.
 	r := buildFromOverrides(driver.MountResources{
 		MemoryLimit: quantityPtr("16Mi"),
 	})

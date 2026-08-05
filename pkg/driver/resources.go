@@ -18,9 +18,17 @@ const (
 // Default resource requests applied to the FUSE daemon container (mount
 // pod or injected sidecar) when the user does not set cpuRequest /
 // memoryRequest in volumeAttributes.
+//
+// The memory request must reflect what a writing mount actually holds in
+// RAM: under a stalled CAS upload, hf-mount's write pipeline plateaus at
+// ~1.8GiB (measured: in-flight FUSE writes + xet-core ingestion buffers +
+// serialized xorbs). A 32Mi request made the FUSE daemon the OOM killer's
+// first pick under node memory pressure, killing the mount mid-write
+// (incident 2026-08-05). Write-heavy volumes should also set memoryLimit
+// >= 3Gi in volumeAttributes if a limit is desired at all.
 var (
 	DefaultMountCPURequest    = resource.MustParse("10m")
-	DefaultMountMemoryRequest = resource.MustParse("32Mi")
+	DefaultMountMemoryRequest = resource.MustParse("2Gi")
 )
 
 // MountResources carries already-parsed resource overrides. A nil field
