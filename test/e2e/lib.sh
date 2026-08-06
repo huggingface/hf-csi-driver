@@ -9,7 +9,7 @@ DRIVER_IMAGE=${DRIVER_IMAGE:-hf-csi-driver:test}
 HF_MOUNT_IMAGE=${HF_MOUNT_IMAGE:-ghcr.io/huggingface/hf-mount-fuse:v0.3.1}
 BUSYBOX_IMAGE=${BUSYBOX_IMAGE:-public.ecr.aws/docker/library/busybox:latest}
 HUB_API=${HUB_API:-https://huggingface.co/api}
-HUB_BUCKET=${HUB_BUCKET:-XciD/csi-e2e-bucket}
+HUB_BUCKET=${HUB_BUCKET:-infra-workloads/csi-e2e-bucket}
 
 log() { printf '[%(%H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { log "FAIL: $*"; exit 1; }
