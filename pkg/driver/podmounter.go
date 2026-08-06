@@ -39,11 +39,13 @@ const (
 	podDeletionTimeout = 60 * time.Second
 )
 
-// DefaultMountReadyTimeout is the default for --mount-ready-timeout. It stays
-// under kubelet's 2-minute CSI operation deadline: waiting longer inside the
-// RPC is work nobody is listening for, and it holds the per-source lock that
-// the next kubelet retry needs. Timing out is cheap since the mount pod is
-// kept (see errWaitTimeout) and the retry resumes its startup progress.
+// DefaultMountReadyTimeout is the default for --mount-ready-timeout. It is
+// the budget for one whole Mount() attempt — pod scheduling/pull AND the
+// FUSE mount appearing share it — and stays under kubelet's 2-minute CSI
+// operation deadline: waiting longer inside the RPC is work nobody is
+// listening for, and it holds the per-source lock that the next kubelet
+// retry needs. Timing out is cheap since the mount pod is kept (see
+// errWaitTimeout) and the retry resumes its startup progress.
 const DefaultMountReadyTimeout = 90 * time.Second
 
 // errWaitTimeout marks a pure readiness timeout: the mount pod is alive and
@@ -465,10 +467,15 @@ func (m *PodMounter) dropDeadPodRefs(refs []string) []string {
 		klog.Warningf("Force-unmounting orphan bind %s (pod UID %s no longer exists)", ref, uid)
 		// Repaired targets carry a stack of binds; pop them all, otherwise
 		// the leaked layers survive precisely when no NodeUnpublishVolume
-		// will ever come for this target.
+		// will ever come for this target. Only drop the ref once the
+		// unmount is POSITIVELY confirmed: a check error (e.g. ENOTCONN)
+		// can mean a dead mount is still there, and dropping the ref then
+		// would let the source be cleaned up underneath it.
 		unmountAll(ref)
-		if mounted, err := m.checker.IsMountPoint(ref); err == nil && mounted {
-			klog.Warningf("Force umount of orphan bind %s left it mounted", ref)
+		mounted, err := m.checker.IsMountPoint(ref)
+		stillMounted := mounted || (err != nil && !os.IsNotExist(err))
+		if stillMounted {
+			klog.Warningf("Force umount of orphan bind %s left it mounted (err: %v)", ref, err)
 			alive = append(alive, ref)
 			continue
 		}
@@ -616,7 +623,7 @@ func (m *PodMounter) tryHealSource(mountPath string) {
 		return
 	}
 
-	if runErr := m.waitForPodRunning(ctx, podName); runErr != nil {
+	if runErr := m.waitForPodRunning(ctx, podName, time.Now().Add(podReadyTimeout)); runErr != nil {
 		klog.Warningf("tryHealSource: recreated pod %s did not become running: %v", podName, runErr)
 		_ = m.client.CoreV1().Pods(m.namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 		return
@@ -693,7 +700,7 @@ func (m *PodMounter) rebindTargets(mountPath string) {
 // error if the path is genuinely unusable.
 func stackBind(source, target string) error {
 	if err := os.MkdirAll(target, 0750); err != nil {
-		klog.V(4).Infof("MkdirAll(%s): %v (continuing; bind can stack over an existing mountpoint)", target, err)
+		logMkdirOnMountpoint(target, err)
 	}
 	err := bindMount(source, target)
 	if err == nil {
@@ -708,6 +715,18 @@ func stackBind(source, target string) error {
 		return fmt.Errorf("failed to create target directory %s: %w", target, err)
 	}
 	return bindMount(source, target)
+}
+
+// logMkdirOnMountpoint records a tolerated MkdirAll failure. The expected
+// case — the path is an existing (possibly dead) mountpoint that the caller
+// stacks a bind over — stays at V(4); anything else (EACCES, ENOSPC, ...)
+// is a real signal the operator should see next to the eventual bind error.
+func logMkdirOnMountpoint(target string, err error) {
+	if mount.IsCorruptedMnt(err) || os.IsExist(err) {
+		klog.V(4).Infof("MkdirAll(%s): %v (continuing; bind can stack over an existing mountpoint)", target, err)
+		return
+	}
+	klog.Warningf("MkdirAll(%s): %v (continuing; the bind below will surface the real error if the path is unusable)", target, err)
 }
 
 // unmountAll lazily detaches every mount stacked at path, bounded to avoid
@@ -814,7 +833,12 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 	cleanupPod = createdPod
 	cleanupCRD = createdPod
 
-	if err := m.waitForPodRunning(ctx, podName); err != nil {
+	// Single readiness budget for the whole attempt (see
+	// DefaultMountReadyTimeout): both waits draw from it, so this RPC never
+	// holds the source lock longer than the configured timeout.
+	readyDeadline := time.Now().Add(m.mountReadyTimeout)
+
+	if err := m.waitForPodRunning(ctx, podName, readyDeadline); err != nil {
 		// A pure readiness timeout means the pod is still coming up (e.g. a
 		// slow image pull). Keep it so the next kubelet retry resumes the
 		// pull instead of restarting it from zero. Any other failure is
@@ -832,7 +856,7 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		return fmt.Errorf("mount pod %s did not become running: %w", podName, err)
 	}
 
-	if err := m.waitForMount(mountPath, podName); err != nil {
+	if err := m.waitForMount(mountPath, podName, readyDeadline); err != nil {
 		// A pure readiness timeout means the mount pod is alive and still
 		// working (e.g. Hub rate limiting slows its startup calls). Keep the
 		// pod and CRD so the next kubelet retry resumes its progress instead
@@ -1228,8 +1252,8 @@ func (m *PodMounter) buildMountPod(name, volumeID, sourceType, sourceID, mountPa
 	}
 }
 
-func (m *PodMounter) waitForPodRunning(ctx context.Context, name string) error {
-	deadline := time.After(podReadyTimeout)
+func (m *PodMounter) waitForPodRunning(ctx context.Context, name string, absDeadline time.Time) error {
+	deadline := time.After(min(time.Until(absDeadline), podReadyTimeout))
 	ticker := time.NewTicker(podReadyPoll)
 	defer ticker.Stop()
 
@@ -1259,8 +1283,8 @@ func (m *PodMounter) waitForPodRunning(ctx context.Context, name string) error {
 	}
 }
 
-func (m *PodMounter) waitForMount(path, podName string) error {
-	deadline := time.After(m.mountReadyTimeout)
+func (m *PodMounter) waitForMount(path, podName string, absDeadline time.Time) error {
+	deadline := time.After(time.Until(absDeadline))
 	ticker := time.NewTicker(mountReadyPollPM)
 	defer ticker.Stop()
 

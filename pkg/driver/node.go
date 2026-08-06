@@ -164,7 +164,7 @@ func (d *Driver) NodePublishVolume(_ context.Context, req *csi.NodePublishVolume
 	// leaves the corpse in place for the mounter to stack a fresh bind over
 	// (see stackBind), and MkdirAll cannot succeed on it.
 	if err := os.MkdirAll(target, 0750); err != nil {
-		klog.V(4).Infof("MkdirAll(%s): %v (continuing; mounter can stack over an existing mountpoint)", target, err)
+		logMkdirOnMountpoint(target, err)
 	}
 
 	// Extract volume mount group (fsGroup) from the CSI request.

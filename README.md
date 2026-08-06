@@ -221,6 +221,14 @@ Configured in `volumeAttributes` of the PV's CSI section:
 
 ### Sidecar resources
 
+> **Upgrade note:** writable (bucket) volumes now default to a **2Gi** memory
+> request for the FUSE daemon container (mount pod or injected sidecar),
+> matching the measured worst-case write-pipeline footprint under a stalled
+> upload. Read-only volumes — including all repo sources — keep a small
+> 128Mi request and are unaffected. If existing writable workloads were sized
+> against the old 32Mi default, either resize the nodes or set an explicit
+> `memoryRequest` volumeAttribute on those volumes.
+
 When the admission webhook is enabled, the `hf-mount` FUSE sidecar is injected
 into every pod using an HF CSI volume. By default it ships with modest
 requests (`cpu: 10m`, `memory: 32Mi`) and **no limits**, which can let the

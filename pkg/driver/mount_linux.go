@@ -5,6 +5,7 @@ package driver
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -37,12 +38,39 @@ func boundToCurrentSource(target, source string) bool {
 			continue
 		}
 		backing := fields[2] + " " + fields[3]
-		switch fields[4] {
+		switch unescapeMountPath(fields[4]) {
 		case target:
 			targetTop = backing
 		case source:
 			sourceTop = backing
 		}
 	}
+	if scanner.Err() != nil {
+		// A short read must not report "already bound": the caller then
+		// stacks a redundant (harmless) bind rather than skipping a needed one.
+		return false
+	}
 	return targetTop != "" && targetTop == sourceTop
+}
+
+// unescapeMountPath decodes the octal escapes mountinfo uses for special
+// characters in path fields (`\040` space, `\011` tab, `\012` newline,
+// `\134` backslash). Paths without a backslash are returned as-is.
+func unescapeMountPath(p string) string {
+	if !strings.Contains(p, "\\") {
+		return p
+	}
+	var b strings.Builder
+	b.Grow(len(p))
+	for i := 0; i < len(p); i++ {
+		if p[i] == '\\' && i+3 < len(p) {
+			if v, err := strconv.ParseUint(p[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(p[i])
+	}
+	return b.String()
 }
