@@ -18,6 +18,14 @@ spec:
         {{- include "hf-csi-driver.labels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "hf-csi-driver.fullname" . }}
+      {{- with .Values.webhook.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.webhook.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
