@@ -55,6 +55,11 @@ webhook:
     pullPolicy: IfNotPresent
   replicas: 1
   port: 9443
+  # Webhook-scoped scheduling; the top-level nodeSelector/tolerations only
+  # apply to the node plugin DaemonSet. Use these to keep the webhook off
+  # workload nodes (it blocks autoscaler node removal as a single-replica pod).
+  nodeSelector: {}
+  tolerations: []
 
 sidecars:
   nodeDriverRegistrar:
