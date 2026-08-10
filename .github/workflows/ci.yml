@@ -120,6 +120,11 @@ jobs:
       - name: Setup cluster (podmount)
         run: test/e2e/setup-cluster.sh podmount
 
+      - name: Start mount pod log collector
+        run: |
+          mkdir -p /tmp/hf-mount-logs
+          nohup test/e2e/collect-mount-logs.sh /tmp/hf-mount-logs >/tmp/hf-mount-logs/collector.out 2>&1 &
+
       - name: 01-mount               # public repo, PV+PVC mount + verify mount pod / HFMount CRD
         run: test/e2e/podmount/01-mount.sh
 
