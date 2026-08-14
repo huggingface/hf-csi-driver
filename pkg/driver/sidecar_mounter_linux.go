@@ -5,6 +5,7 @@ package driver
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/util"
+	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
 )
 
@@ -117,6 +119,64 @@ func sidecarEmptyDirPath(podUID string) string {
 	return filepath.Join(kubeletPodsBase, podUID, "volumes", "kubernetes.io~empty-dir", emptyDirName)
 }
 
+// The handoff dir (<emptyDir>/.volumes/<hash>) is writable by the sidecar UID
+// (65534), so a tenant acting as that UID could swap a control file for a
+// symlink into the host (e.g. /proc/1/root/...) that this privileged hostPID
+// plugin would then follow. The dir and its parents are root-owned and can't be
+// swapped, so we resolve each control file relative to a dirfd with
+// RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH — a planted symlink then fails with ELOOP.
+
+// openHandoffFile opens `name` (a single component) inside the root-owned
+// handoff dir, refusing symlink and magic-link resolution.
+func openHandoffFile(dir, name string, flags int, perm os.FileMode) (*os.File, error) {
+	dirFd, err := unix.Open(dir, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open handoff dir %s: %w", dir, err)
+	}
+	defer func() { _ = unix.Close(dirFd) }()
+
+	how := unix.OpenHow{
+		Flags:   uint64(flags) | unix.O_CLOEXEC,
+		Mode:    uint64(perm.Perm()),
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_BENEATH,
+	}
+	fd, err := unix.Openat2(dirFd, name, &how)
+	if err != nil {
+		return nil, fmt.Errorf("openat2 %s in %s: %w", name, dir, err)
+	}
+	return os.NewFile(uintptr(fd), filepath.Join(dir, name)), nil
+}
+
+// writeHandoffFile writes a control file without following symlinks, chowning
+// to the sidecar UID over the fd (not by path) when chownSidecar is set.
+func writeHandoffFile(dir, name string, data []byte, perm os.FileMode, chownSidecar bool) error {
+	f, err := openHandoffFile(dir, name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	if chownSidecar {
+		if err := f.Chown(65534, 65534); err != nil {
+			return fmt.Errorf("chown %s: %w", name, err)
+		}
+	}
+	return f.Close()
+}
+
+// readHandoffFile reads a control file without following symlinks; a missing
+// file or an unresolvable planted symlink both surface as an error.
+func readHandoffFile(dir, name string) ([]byte, error) {
+	f, err := openHandoffFile(dir, name, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
 // sidecarMount performs a FUSE mount via fd-passing to the sidecar container.
 //
 // Flow:
@@ -184,14 +244,15 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	// The emptyDir is tmpfs (medium: Memory) so the token never hits disk.
 	// On republish, refreshSidecarToken overwrites this file with fresh credentials.
 	if opts.TokenFile != "" {
+		// opts.TokenFile is the kubelet-managed source (trusted); the destination
+		// inside the 65534-writable handoff dir is what must not be a symlink.
 		tokenDst := filepath.Join(volumeDir, "token")
 		if data, err := os.ReadFile(opts.TokenFile); err == nil {
-			if err := os.WriteFile(tokenDst, data, 0600); err != nil {
+			// The sidecar runs as user 65534 (nobody) and needs to read the token.
+			if err := writeHandoffFile(volumeDir, "token", data, 0600, true); err != nil {
 				cleanup()
 				return fmt.Errorf("write sidecar token: %w", err)
 			}
-			// The sidecar runs as user 65534 (nobody) and needs to read the token.
-			_ = os.Chown(tokenDst, 65534, 65534)
 		}
 		opts.TokenFile = sidecarPath(tokenDst)
 	}
@@ -207,7 +268,7 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	}
 	// Prepend program name (required by clap's try_parse_from).
 	argsContent := "hf-mount-fuse-sidecar\n" + strings.Join(args, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(volumeDir, "args"), []byte(argsContent), 0644); err != nil {
+	if err := writeHandoffFile(volumeDir, "args", []byte(argsContent), 0644, false); err != nil {
 		cleanup()
 		return fmt.Errorf("write args: %w", err)
 	}
@@ -237,9 +298,10 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 		return fmt.Errorf("listen on %s: %w", socketPath, err)
 	}
 
-	// The sidecar runs as user 65534 (nobody). It needs write permission
-	// on the socket file to connect.
-	_ = os.Chown(filepath.Join(volumeDir, "s"), 65534, 65534)
+	// The sidecar (user 65534) needs write permission on the socket to connect.
+	// Lchown, not Chown, so a symlink planted at `s` by a tenant acting as 65534
+	// can't redirect the chown to a host file.
+	_ = os.Lchown(filepath.Join(volumeDir, "s"), 65534, 65534)
 
 	// --- Step 4: Async goroutine sends the fd when the sidecar connects ---
 
@@ -332,11 +394,11 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 func checkSidecarHealth(podUID, volumeName string) error {
 	tmpDir := sidecarEmptyDirPath(podUID)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(volumeName)))[:12]
-	errorPath := filepath.Join(tmpDir, ".volumes", hash, "error")
+	volumeDir := filepath.Join(tmpDir, ".volumes", hash)
 
-	data, err := os.ReadFile(errorPath)
+	data, err := readHandoffFile(volumeDir, "error")
 	if err != nil {
-		return nil // no error file = healthy
+		return nil // no error file (or a symlink that won't resolve) = treat as healthy
 	}
 	msg := strings.TrimSpace(string(data))
 	if msg == "" {
@@ -360,12 +422,11 @@ func cleanupSidecarSocket(volumeName string) {
 func refreshSidecarToken(podUID, volumeName, token string) {
 	tmpDir := sidecarEmptyDirPath(podUID)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(volumeName)))[:12]
-	tokenPath := filepath.Join(tmpDir, ".volumes", hash, "token")
+	volumeDir := filepath.Join(tmpDir, ".volumes", hash)
 
-	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
-		klog.Warningf("Sidecar token refresh: cannot write %s: %v", tokenPath, err)
+	if err := writeHandoffFile(volumeDir, "token", []byte(token), 0600, true); err != nil {
+		klog.Warningf("Sidecar token refresh: cannot write token in %s: %v", volumeDir, err)
 	} else {
-		_ = os.Chown(tokenPath, 65534, 65534)
 		klog.V(4).Infof("Refreshed sidecar token for volume %s", volumeName)
 	}
 }
