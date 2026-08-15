@@ -35,7 +35,7 @@ const AnnotationOriginalGracePeriod = "hf.csi.huggingface.co/original-terminatio
 // resources carries optional per-pod resource overrides collected from
 // volumeAttributes. Invalid quantity strings are logged and dropped so a
 // typo never blocks pod admission.
-func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources driver.MountResources) {
+func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources driver.MountResources, allReadOnly bool) {
 	// Add the shared emptyDir volume for config + socket communication.
 	// Use tmpfs (Memory) because the args file may contain the HF token.
 	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
@@ -114,7 +114,7 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 			PeriodSeconds:    1,
 			FailureThreshold: 120,
 		},
-		Resources: driver.BuildResourceRequirements(resources, driver.DefaultMountCPURequest, driver.DefaultMountMemoryRequest),
+		Resources: driver.BuildResourceRequirements(resources, driver.DefaultMountCPURequest, driver.DefaultMemoryRequestFor(allReadOnly)),
 	}
 
 	// Prepend as init container (native sidecar, KEP-753).

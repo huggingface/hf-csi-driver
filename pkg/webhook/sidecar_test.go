@@ -28,7 +28,7 @@ func TestBuildSidecarResources_Defaults(t *testing.T) {
 	if got, want := r.Requests[corev1.ResourceCPU], resource.MustParse("10m"); got.Cmp(want) != 0 {
 		t.Fatalf("default cpu request: got %s, want %s", got.String(), want.String())
 	}
-	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("32Mi"); got.Cmp(want) != 0 {
+	if got, want := r.Requests[corev1.ResourceMemory], resource.MustParse("2Gi"); got.Cmp(want) != 0 {
 		t.Fatalf("default memory request: got %s, want %s", got.String(), want.String())
 	}
 	if len(r.Limits) != 0 {
@@ -117,7 +117,7 @@ func TestResourcesMergeMax_TakesMaxAndIsOrderIndependent(t *testing.T) {
 // request > limit (apiserver would reject the pod). We clamp request down
 // to the limit and log a warning.
 func TestBuildSidecarResources_RequestClampedToLimit(t *testing.T) {
-	// memoryLimit: 16Mi is smaller than the default 32Mi request.
+	// memoryLimit: 16Mi is smaller than the default 2Gi request.
 	r := buildFromOverrides(driver.MountResources{
 		MemoryLimit: quantityPtr("16Mi"),
 	})
@@ -228,7 +228,7 @@ func TestEnsureTerminationGracePeriod_EqualMinIsKept(t *testing.T) {
 // the same admission patch.
 func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
-	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{}, false)
 	if pod.Spec.TerminationGracePeriodSeconds == nil ||
 		*pod.Spec.TerminationGracePeriodSeconds != MinTerminationGracePeriodSeconds {
 		t.Fatalf("want grace=%d after injection, got %v", MinTerminationGracePeriodSeconds, pod.Spec.TerminationGracePeriodSeconds)
@@ -246,7 +246,7 @@ func TestInjectSidecar_SetsGracePeriodAndAnnotation(t *testing.T) {
 // (unkillable D-state). Pin the injected env to the enforced grace.
 func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{TerminationGracePeriodSeconds: ptr.To[int64](0)}}
-	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest"}, 1, driver.MountResources{}, false)
 
 	var sc *corev1.Container
 	for i := range pod.Spec.InitContainers {
@@ -277,7 +277,7 @@ func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
 
 func TestInjectSidecar_PassesLogFormatToSidecar(t *testing.T) {
 	pod := &corev1.Pod{}
-	injectSidecar(pod, Config{SidecarImage: "test:latest", SidecarLogFormat: "json"}, 1, driver.MountResources{})
+	injectSidecar(pod, Config{SidecarImage: "test:latest", SidecarLogFormat: "json"}, 1, driver.MountResources{}, false)
 
 	var sc *corev1.Container
 	for i := range pod.Spec.InitContainers {
@@ -317,7 +317,7 @@ func TestScanHFCSIVolumes_ReturnsLogFormatFromVolumeAttributes(t *testing.T) {
 		},
 	}}}
 
-	count, _, logFormat := (&Injector{}).scanHFCSIVolumes(context.Background(), pod, "hub")
+	count, _, logFormat, _ := (&Injector{}).scanHFCSIVolumes(context.Background(), pod, "hub")
 	if count != 1 {
 		t.Fatalf("want 1 HF CSI volume, got %d", count)
 	}
