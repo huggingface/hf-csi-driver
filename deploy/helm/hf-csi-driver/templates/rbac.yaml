@@ -21,6 +21,16 @@ rules:
   - apiGroups: ["hf.csi.huggingface.co"]
     resources: ["hfmounts", "hfmounts/status"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
+  {{- if .Values.startupTaint.enabled }}
+  # Startup taint: the node plugin watches its own CSINode entry and strips the
+  # bootstrap taint from the Node once kubelet has registered the driver.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

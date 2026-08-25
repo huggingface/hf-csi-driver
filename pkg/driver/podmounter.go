@@ -184,11 +184,18 @@ func (m *PodMounter) Start(stopCh <-chan struct{}) {
 	}
 
 	factory.Start(stopCh)
-	factory.WaitForCacheSync(stopCh)
-	klog.Infof("Mount pod watcher started for node %s", m.nodeID)
 
-	// Periodic cleanup: scan for orphaned source mounts whose pods are gone.
-	go m.periodicCleanup(stopCh)
+	// Sync off the caller's path: on a freshly-launched node the API server is unreachable
+	// until kube-proxy programs the service VIP (~30s), and blocking here kept the CSI socket
+	// closed long enough for node-driver-registrar to time out and restart. Every consumer
+	// of the informer already tolerates a not-yet-synced cache.
+	go func() {
+		factory.WaitForCacheSync(stopCh)
+		klog.Infof("Mount pod watcher started for node %s", m.nodeID)
+
+		// Periodic cleanup: scan for orphaned source mounts whose pods are gone.
+		m.periodicCleanup(stopCh)
+	}()
 }
 
 // periodicCleanup runs every 5 minutes to find and clean up orphaned mounts.
