@@ -274,6 +274,23 @@ make build
 make test
 ```
 
+## Startup taint (fresh nodes)
+
+On a freshly-launched node the driver registers with kubelet 35–80 s after the node becomes
+schedulable; any pod with an HF volume scheduled in that window gets `FailedMount: driver name
+hf.csi.huggingface.co not found`. To close the window, taint nodes at registration and let the
+driver lift the taint once it is ready (the same pattern as `ebs.csi.aws.com/agent-not-ready`):
+
+1. Have node bootstrap add `hf.csi.huggingface.co/agent-not-ready:NoSchedule` — kubelet
+   `registerWithTaints` in the kubelet configuration, or your node provisioner's template taints.
+2. Install the chart with `--set startupTaint.enabled=true` (key configurable via
+   `startupTaint.key`). This passes `--startup-taint-key` to the node plugin and grants it
+   `csinodes get` + `nodes get/patch`.
+
+The plugin polls its own `CSINode` entry and removes the taint only after kubelet lists the
+driver, so a `NodePublishVolume` on that node is guaranteed to reach a live driver. The
+DaemonSet itself tolerates every taint, so it still schedules onto tainted nodes.
+
 ## Node-layer hardening
 
 A wedged FUSE connection (serving daemon dead, requests stuck in the kernel) is dangerous beyond its own pod: `sync(2)` walks **every** mounted superblock, so a single dead FUSE superblock blocks any node-wide `sync(2)` — and that has stranded *unrelated*, healthy pods in `Terminating` for hours while they held scarce GPUs.

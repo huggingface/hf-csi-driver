@@ -36,6 +36,15 @@ fuseSweep:
   enabled: true
   interval: 60s
 
+# Startup taint (cf. ebs.csi.aws.com/agent-not-ready). Node bootstrap must apply
+# `<key>:NoSchedule` at registration (kubelet `registerWithTaints` or the node
+# provisioner's template); the plugin removes it once kubelet lists the driver in
+# the node's CSINode. Without it, pods scheduled onto a fresh node fail their HF
+# volume mounts for the ~35-80s the driver takes to register.
+startupTaint:
+  enabled: false
+  key: hf.csi.huggingface.co/agent-not-ready
+
 nodeSelector:
   kubernetes.io/os: linux
 
