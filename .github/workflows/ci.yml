@@ -152,12 +152,18 @@ jobs:
       - name: 09-bucket-rw
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/podmount/09-bucket-rw.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/podmount/09-bucket-rw.sh
 
       - name: 10-fsgroup
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/podmount/10-fsgroup.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/podmount/10-fsgroup.sh
 
       - name: Debug on failure
         if: failure()
@@ -209,12 +215,18 @@ jobs:
       - name: 05-bucket-rw
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/sidecar/05-bucket-rw.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/sidecar/05-bucket-rw.sh
 
       - name: 06-fsgroup
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/sidecar/06-fsgroup.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/sidecar/06-fsgroup.sh
 
       - name: 07-token-perms
         run: test/e2e/sidecar/07-token-perms.sh
