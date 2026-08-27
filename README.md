@@ -288,8 +288,10 @@ driver lift the taint once it is ready (the same pattern as `ebs.csi.aws.com/age
    `csinodes get` + `nodes get/patch`.
 
 The plugin polls its own `CSINode` entry and removes the taint only after kubelet lists the
-driver, so a `NodePublishVolume` on that node is guaranteed to reach a live driver. The
-DaemonSet itself tolerates every taint, so it still schedules onto tainted nodes.
+driver, so a `NodePublishVolume` on that node is guaranteed to reach a live driver. Polling is
+every 2s with a 3s per-request deadline, so the taint lifts within a few seconds of registration
+even when the plugin comes up before node networking does. The DaemonSet itself tolerates every
+taint, so it still schedules onto tainted nodes.
 
 ## Node-layer hardening
 
