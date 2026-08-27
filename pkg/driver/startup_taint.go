@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -20,6 +21,11 @@ import (
 const DefaultStartupTaintKey = "hf.csi.huggingface.co/agent-not-ready"
 
 const startupTaintPollInterval = 2 * time.Second
+
+// Per-request deadline. The plugin starts before node networking is up and client-go's default
+// 30s dial timeout would otherwise hold the taint ~30s past registration (long enough for the
+// autoscaler to provision a second node for the pod waiting on this one).
+const startupTaintRequestTimeout = 3 * time.Second
 
 // RemoveStartupTaint blocks until kubelet lists DriverName in this node's CSINode (i.e.
 // node-driver-registrar completed), then strips every taint with taintKey from the Node.
@@ -37,7 +43,7 @@ func waitForCSINodeDriver(ctx context.Context, client kubernetes.Interface, node
 	ticker := time.NewTicker(startupTaintPollInterval)
 	defer ticker.Stop()
 	for {
-		csiNode, err := client.StorageV1().CSINodes().Get(ctx, nodeName, metav1.GetOptions{})
+		csiNode, err := getCSINode(ctx, client, nodeName)
 		switch {
 		case err == nil:
 			for _, drv := range csiNode.Spec.Drivers {
@@ -56,6 +62,12 @@ func waitForCSINodeDriver(ctx context.Context, client kubernetes.Interface, node
 		case <-ticker.C:
 		}
 	}
+}
+
+func getCSINode(ctx context.Context, client kubernetes.Interface, nodeName string) (*storagev1.CSINode, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, startupTaintRequestTimeout)
+	defer cancel()
+	return client.StorageV1().CSINodes().Get(reqCtx, nodeName, metav1.GetOptions{})
 }
 
 func removeNodeTaint(ctx context.Context, client kubernetes.Interface, nodeName, taintKey string) error {
@@ -79,6 +91,8 @@ func removeNodeTaint(ctx context.Context, client kubernetes.Interface, nodeName,
 // (JSON Patch `test` on the full taint list) makes a concurrent taint change fail with a
 // conflict instead of being clobbered; the caller retries.
 func tryRemoveNodeTaint(ctx context.Context, client kubernetes.Interface, nodeName, taintKey string) error {
+	ctx, cancel := context.WithTimeout(ctx, startupTaintRequestTimeout)
+	defer cancel()
 	node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return err
