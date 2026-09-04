@@ -261,6 +261,18 @@ volumeAttributes:
   mountFlags: "advanced-writes,uid=1000"
 ```
 
+Without an `fsGroup` or `uid`, the mount is owned by the sidecar user (65534) and
+remote entries are reported `0755`/`0644`, so only root can write. When the
+container user is not known up front (arbitrary images), make remote entries
+world-writable instead (hf-mount >= v0.10.0):
+
+```yaml
+volumeAttributes:
+  sourceType: bucket
+  sourceId: username/my-bucket
+  mountFlags: "advanced-writes,dir-mode=0777,file-mode=0666"
+```
+
 ## Building
 
 ```bash
