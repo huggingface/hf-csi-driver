@@ -851,14 +851,16 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		// pull instead of restarting it from zero. Any other failure is
 		// fatal for this pod — delete it even when this attempt merely
 		// reused it (createdPod == false), or a retained pod that later
-		// crash-loops would be reused by every retry forever.
+		// crash-loops would be reused by every retry forever. The CRD is
+		// only ours to delete when this attempt created it: for a reused
+		// pod it carries the other consumers' workload registrations and is
+		// what tryHealSource rebuilds the pod from.
 		if goerrors.Is(err, errWaitTimeout) {
 			cleanupPod = false
 			cleanupCRD = false
 			klog.Warningf("Mount pod %s not running yet; keeping it for the next kubelet retry", podName)
 		} else {
 			cleanupPod = true
-			cleanupCRD = true
 		}
 		return fmt.Errorf("mount pod %s did not become running: %w", podName, err)
 	}
@@ -869,14 +871,14 @@ func (m *PodMounter) Mount(sourceType, sourceID, target string, opts MountOption
 		// pod and CRD so the next kubelet retry resumes its progress instead
 		// of deleting it and restarting the whole startup sequence from
 		// zero. Any other failure (crash loop, terminal phase, deletion) is
-		// fatal — replace the pod even when it was merely reused.
+		// fatal — replace the pod even when it was merely reused, but keep
+		// the CRD unless this attempt created it (see above).
 		if goerrors.Is(err, errWaitTimeout) {
 			cleanupPod = false
 			cleanupCRD = false
 			klog.Warningf("Mount pod %s not ready within %s; keeping it for the next kubelet retry", podName, m.mountReadyTimeout)
 		} else {
 			cleanupPod = true
-			cleanupCRD = true
 		}
 		return fmt.Errorf("FUSE mount did not appear at %s: %w", mountPath, err)
 	}
@@ -1295,30 +1297,24 @@ func (m *PodMounter) waitForMount(path, podName string, absDeadline time.Time) e
 	ticker := time.NewTicker(mountReadyPollPM)
 	defer ticker.Stop()
 
+	// Check once before waiting on the ticker: waitForPodRunning may have
+	// used up the shared budget, and a mount that is already there must not
+	// be reported as a timeout.
 	var lastErr error
 	for {
-		select {
-		case <-deadline:
-			if lastErr != nil {
-				return fmt.Errorf("timeout waiting for mount at %s: %w (last check error: %v)", path, errWaitTimeout, lastErr)
-			}
-			return fmt.Errorf("timeout waiting for mount at %s: %w", path, errWaitTimeout)
-		case <-ticker.C:
-			mounted, err := m.checker.IsMountPoint(path)
-			if err != nil {
-				lastErr = err
-			}
-			if err == nil && mounted {
-				return nil
-			}
-			// Check if the mount pod crashed or was deleted while we wait.
-			pod, podErr := m.client.CoreV1().Pods(m.namespace).Get(context.TODO(), podName, metav1.GetOptions{})
-			if errors.IsNotFound(podErr) {
-				return fmt.Errorf("mount pod %s was deleted before mount appeared", podName)
-			}
-			if podErr != nil {
-				continue
-			}
+		mounted, err := m.checker.IsMountPoint(path)
+		if err != nil {
+			lastErr = err
+		}
+		if err == nil && mounted {
+			return nil
+		}
+		// Check if the mount pod crashed or was deleted while we wait.
+		pod, podErr := m.client.CoreV1().Pods(m.namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+		if errors.IsNotFound(podErr) {
+			return fmt.Errorf("mount pod %s was deleted before mount appeared", podName)
+		}
+		if podErr == nil {
 			if isPodTerminal(pod) {
 				return fmt.Errorf("mount pod %s failed (phase=%s) before mount appeared", podName, pod.Status.Phase)
 			}
@@ -1326,6 +1322,15 @@ func (m *PodMounter) waitForMount(path, podName string, absDeadline time.Time) e
 			if restarts >= crashLoopRestartThreshold {
 				return fmt.Errorf("mount pod %s keeps crashing (%d restarts)", podName, restarts)
 			}
+		}
+
+		select {
+		case <-deadline:
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for mount at %s: %w (last check error: %v)", path, errWaitTimeout, lastErr)
+			}
+			return fmt.Errorf("timeout waiting for mount at %s: %w", path, errWaitTimeout)
+		case <-ticker.C:
 		}
 	}
 }

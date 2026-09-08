@@ -215,7 +215,7 @@ Configured in `volumeAttributes` of the PV's CSI section:
 | `tokenKey` | no | `token` | Key in the Secret to use as the HF token |
 | `mountFlags` | no | | Comma-separated hf-mount flags for inline ephemeral volumes (e.g. `advanced-writes,uid=1000`) |
 | `memoryLimit` | no | | Memory limit for the injected `hf-mount` sidecar (e.g. `2Gi`). Requires the admission webhook. |
-| `memoryRequest` | no | `32Mi` | Memory request for the injected `hf-mount` sidecar (e.g. `128Mi`). Requires the admission webhook. |
+| `memoryRequest` | no | `2Gi` (writable) / `128Mi` (read-only) | Memory request for the injected `hf-mount` sidecar (e.g. `256Mi`). Requires the admission webhook. |
 | `cpuLimit` | no | | CPU limit for the injected `hf-mount` sidecar (e.g. `1`, `500m`). Requires the admission webhook. |
 | `cpuRequest` | no | `10m` | CPU request for the injected `hf-mount` sidecar (e.g. `100m`). Requires the admission webhook. |
 
