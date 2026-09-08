@@ -1,6 +1,8 @@
 package driver
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/klog/v2"
@@ -35,6 +37,24 @@ var (
 	DefaultMountMemoryRequest         = resource.MustParse("2Gi")
 	DefaultMountMemoryRequestReadOnly = resource.MustParse("128Mi")
 )
+
+// SetDefaultMemoryRequests replaces the built-in memory request defaults
+// with operator-provided quantities (--default-memory-request and
+// --default-memory-request-read-only). Called once at startup, before any
+// pod is built.
+func SetDefaultMemoryRequests(writable, readOnly string) error {
+	writableQty, err := resource.ParseQuantity(writable)
+	if err != nil {
+		return fmt.Errorf("invalid default memory request %q: %w", writable, err)
+	}
+	readOnlyQty, err := resource.ParseQuantity(readOnly)
+	if err != nil {
+		return fmt.Errorf("invalid read-only default memory request %q: %w", readOnly, err)
+	}
+	DefaultMountMemoryRequest = writableQty
+	DefaultMountMemoryRequestReadOnly = readOnlyQty
+	return nil
+}
 
 // DefaultMemoryRequestFor returns the default memory request for a mount
 // serving the given access mode.

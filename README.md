@@ -225,14 +225,19 @@ Configured in `volumeAttributes` of the PV's CSI section:
 > request for the FUSE daemon container (mount pod or injected sidecar),
 > matching the measured worst-case write-pipeline footprint under a stalled
 > upload. Read-only volumes — including all repo sources — keep a small
-> 128Mi request and are unaffected. If existing writable workloads were sized
-> against the old 32Mi default, either resize the nodes or set an explicit
-> `memoryRequest` volumeAttribute on those volumes.
+> 128Mi request and are unaffected (a volume counts as read-only when it sets
+> `readOnly: true`, `mountFlags: read-only`, or `sourceType: repo`). If
+> existing writable workloads were sized against the old 32Mi default, either
+> resize the nodes, set an explicit `memoryRequest` volumeAttribute on those
+> volumes, or change the defaults cluster-wide with the chart values
+> `hfMount.defaultMemoryRequest` / `hfMount.defaultMemoryRequestReadOnly`
+> (flags `--default-memory-request` / `--default-memory-request-read-only` on
+> both the node plugin and the webhook).
 
 When the admission webhook is enabled, the `hf-mount` FUSE sidecar is injected
-into every pod using an HF CSI volume. By default it ships with modest
-requests (`cpu: 10m`, `memory: 32Mi`) and **no limits**, which can let the
-cache grow unbounded and trigger node memory pressure under heavy traffic. Use
+into every pod using an HF CSI volume. By default it ships with a `10m` CPU
+request, the memory request described above, and **no limits**, which can let
+the cache grow unbounded and trigger node memory pressure under heavy traffic. Use
 the `memoryLimit` / `memoryRequest` / `cpuLimit` / `cpuRequest`
 `volumeAttributes` to cap it — values are standard Kubernetes quantity strings
 (e.g. `"2Gi"`, `"500m"`).

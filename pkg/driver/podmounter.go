@@ -1266,8 +1266,23 @@ func (m *PodMounter) waitForPodRunning(ctx context.Context, name string, absDead
 	ticker := time.NewTicker(podReadyPoll)
 	defer ticker.Stop()
 
+	// Check once before waiting on the ticker so a budget shorter than the
+	// poll interval, or a pod that is already Running, is never reported as
+	// a timeout without a single look.
 	var lastErr error
 	for {
+		pod, err := m.client.CoreV1().Pods(m.namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			lastErr = err
+		} else {
+			switch pod.Status.Phase {
+			case corev1.PodRunning:
+				return nil
+			case corev1.PodFailed, corev1.PodSucceeded:
+				return fmt.Errorf("pod %s is in terminal phase %s", name, pod.Status.Phase)
+			}
+		}
+
 		select {
 		case <-deadline:
 			if lastErr != nil {
@@ -1277,17 +1292,6 @@ func (m *PodMounter) waitForPodRunning(ctx context.Context, name string, absDead
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			pod, err := m.client.CoreV1().Pods(m.namespace).Get(ctx, name, metav1.GetOptions{})
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			switch pod.Status.Phase {
-			case corev1.PodRunning:
-				return nil
-			case corev1.PodFailed, corev1.PodSucceeded:
-				return fmt.Errorf("pod %s is in terminal phase %s", name, pod.Status.Phase)
-			}
 		}
 	}
 }

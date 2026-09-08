@@ -325,3 +325,34 @@ func TestScanHFCSIVolumes_ReturnsLogFormatFromVolumeAttributes(t *testing.T) {
 		t.Fatalf("want logFormat=json, got %q", logFormat)
 	}
 }
+
+func TestScanHFCSIVolumes_ReadOnlyDetection(t *testing.T) {
+	inline := func(readOnly *bool, attrs map[string]string) corev1.Volume {
+		return corev1.Volume{Name: "v", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{
+			Driver: CSIDriverName, ReadOnly: readOnly, VolumeAttributes: attrs,
+		}}}
+	}
+	cases := []struct {
+		name        string
+		vol         corev1.Volume
+		allReadOnly bool
+	}{
+		{"writable bucket", inline(nil, map[string]string{"sourceType": "bucket"}), false},
+		{"csi readOnly", inline(ptr.To(true), map[string]string{"sourceType": "bucket"}), true},
+		{"repo source", inline(nil, map[string]string{"sourceType": "repo"}), true},
+		{"mountFlags read-only", inline(nil, map[string]string{"sourceType": "bucket", "mountFlags": "uid=1000, read-only"}), true},
+		{"mountFlags other", inline(nil, map[string]string{"sourceType": "bucket", "mountFlags": "advanced-writes"}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{tc.vol}}}
+			count, _, _, allReadOnly := (&Injector{}).scanHFCSIVolumes(context.Background(), pod, "hub")
+			if count != 1 {
+				t.Fatalf("want 1 HF CSI volume, got %d", count)
+			}
+			if allReadOnly != tc.allReadOnly {
+				t.Fatalf("want allReadOnly=%v, got %v", tc.allReadOnly, allReadOnly)
+			}
+		})
+	}
+}

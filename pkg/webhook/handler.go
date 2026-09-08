@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -34,6 +35,9 @@ const (
 	volumeAttrMountMode  = "mountMode"
 	volumeAttrLogFormat  = "logFormat"
 	volumeAttrSourceType = "sourceType"
+	// volumeAttrMountFlags carries comma-separated hf-mount flags for inline
+	// volumes. Must stay in sync with pkg/driver: volumeCtxMountFlags.
+	volumeAttrMountFlags = "mountFlags"
 	mountModeMountPod    = "mountpod"
 )
 
@@ -173,19 +177,29 @@ func (i *Injector) scanHFCSIVolumes(ctx context.Context, pod *corev1.Pod, namesp
 }
 
 // volumeIsReadOnly reports whether an HF CSI volume can never write: either
-// explicitly read-only or backed by a repo source (always read-only).
+// explicitly read-only, mounted with the read-only hf-mount flag, or backed
+// by a repo source (always read-only).
 func volumeIsReadOnly(readOnly *bool, attrs map[string]string) bool {
 	if readOnly != nil && *readOnly {
 		return true
 	}
-	return attrs[volumeAttrSourceType] == "repo"
+	if attrs[volumeAttrSourceType] == "repo" {
+		return true
+	}
+	for _, flag := range strings.Split(attrs[volumeAttrMountFlags], ",") {
+		if strings.TrimSpace(flag) == "read-only" {
+			return true
+		}
+	}
+	return false
 }
 
 // pvMountOptionsReadOnly reports whether the PV's mountOptions force the
-// mount read-only (they are passed through to hf-mount as flags).
+// mount read-only. The driver passes each option to hf-mount as "--<option>",
+// so "read-only" is the only spelling that yields a read-only mount.
 func pvMountOptionsReadOnly(pv *corev1.PersistentVolume) bool {
 	for _, opt := range pv.Spec.MountOptions {
-		if opt == "read-only" || opt == "--read-only" || opt == "ro" {
+		if opt == "read-only" {
 			return true
 		}
 	}

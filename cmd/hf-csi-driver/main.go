@@ -45,6 +45,11 @@ func main() {
 		fuseSweepIntvl   = flag.Duration("fuse-sweep-interval", driver.DefaultFuseSweepInterval, "Interval for the orphaned FUSE connection sweep")
 		startupTaintKey  = flag.String("startup-taint-key", "", "Node taint key to remove once the driver is registered with kubelet (empty disables)")
 
+		// Shared by both modes: defaults for the hf-mount container (mount pod
+		// or injected sidecar) when the volume sets no memoryRequest.
+		defaultMemReq   = flag.String("default-memory-request", driver.DefaultMountMemoryRequest.String(), "Default memory request for the hf-mount container of writable volumes")
+		defaultMemReqRO = flag.String("default-memory-request-read-only", driver.DefaultMountMemoryRequestReadOnly.String(), "Default memory request for the hf-mount container of read-only volumes (including all repo sources)")
+
 		// Webhook mode flags
 		webhookPort      = flag.Int("webhook-port", 22030, "Webhook server port")
 		webhookCertDir   = flag.String("webhook-cert-dir", "/etc/tls-certs", "Directory containing TLS cert and key")
@@ -60,6 +65,10 @@ func main() {
 	if *showVersion {
 		fmt.Printf("hf-csi-driver %s\n", driver.Version)
 		os.Exit(0)
+	}
+
+	if err := driver.SetDefaultMemoryRequests(*defaultMemReq, *defaultMemReqRO); err != nil {
+		klog.Fatal(err)
 	}
 
 	switch *mode {
