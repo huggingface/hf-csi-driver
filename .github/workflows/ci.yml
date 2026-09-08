@@ -12,10 +12,10 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
         with:
           version: latest
 
@@ -25,7 +25,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go test -race -v ./...
@@ -36,7 +36,7 @@ jobs:
       group: aws-general-8-plus
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./cmd/hf-csi-driver/
@@ -120,6 +120,11 @@ jobs:
       - name: Setup cluster (podmount)
         run: test/e2e/setup-cluster.sh podmount
 
+      - name: Start mount pod log collector
+        run: |
+          mkdir -p /tmp/hf-mount-logs
+          nohup test/e2e/collect-mount-logs.sh /tmp/hf-mount-logs >/tmp/hf-mount-logs/collector.out 2>&1 &
+
       - name: 01-mount               # public repo, PV+PVC mount + verify mount pod / HFMount CRD
         run: test/e2e/podmount/01-mount.sh
 
@@ -147,12 +152,18 @@ jobs:
       - name: 09-bucket-rw
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/podmount/09-bucket-rw.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/podmount/09-bucket-rw.sh
 
       - name: 10-fsgroup
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/podmount/10-fsgroup.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/podmount/10-fsgroup.sh
 
       - name: Debug on failure
         if: failure()
@@ -204,12 +215,18 @@ jobs:
       - name: 05-bucket-rw
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/sidecar/05-bucket-rw.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/sidecar/05-bucket-rw.sh
 
       - name: 06-fsgroup
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: test/e2e/sidecar/06-fsgroup.sh
+        run: |
+          # Mask the token to prevent accidental exposure in logs
+          echo "::add-mask::$HF_TOKEN"
+          test/e2e/sidecar/06-fsgroup.sh
 
       - name: 07-token-perms
         run: test/e2e/sidecar/07-token-perms.sh

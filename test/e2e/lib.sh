@@ -9,7 +9,7 @@ DRIVER_IMAGE=${DRIVER_IMAGE:-hf-csi-driver:test}
 HF_MOUNT_IMAGE=${HF_MOUNT_IMAGE:-ghcr.io/huggingface/hf-mount-fuse:v0.3.1}
 BUSYBOX_IMAGE=${BUSYBOX_IMAGE:-public.ecr.aws/docker/library/busybox:latest}
 HUB_API=${HUB_API:-https://huggingface.co/api}
-HUB_BUCKET=${HUB_BUCKET:-XciD/csi-e2e-bucket}
+HUB_BUCKET=${HUB_BUCKET:-infra-workloads/csi-e2e-bucket}
 
 log() { printf '[%(%H:%M:%S)T] %s\n' -1 "$*" >&2; }
 fail() { log "FAIL: $*"; exit 1; }
@@ -34,13 +34,23 @@ list_mount_pods() {
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
 }
 
-# Validate HF_TOKEN, ensure HUB_BUCKET exists, create the hf-ci-token Secret.
-# Required by bucket-rw and fsgroup tests.
+# Validate HF_TOKEN, ensure HUB_BUCKET exists and is writable, create the
+# hf-ci-token Secret. Required by bucket-rw and fsgroup tests.
 setup_bucket_token() {
   : "${HF_TOKEN:?HF_TOKEN is required for bucket tests}"
-  curl -sf "$HUB_API/whoami-v2" -H "Authorization: Bearer $HF_TOKEN" | head -1
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $HF_TOKEN" "$HUB_API/whoami-v2")
+  [[ "$code" == 200 ]] || fail "HF_TOKEN rejected by $HUB_API/whoami-v2 (HTTP $code): token expired, revoked or invalid"
   curl -sf -X POST "$HUB_API/buckets/$HUB_BUCKET" \
-    -H "Authorization: Bearer $HF_TOKEN" || true
+    -H "Authorization: Bearer $HF_TOKEN" >/dev/null || true
+  code=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $HF_TOKEN" "$HUB_API/buckets/$HUB_BUCKET/xet-write-token")
+  case "$code" in
+    200) log "HF_TOKEN valid, write access to $HUB_BUCKET confirmed" ;;
+    404) fail "bucket $HUB_BUCKET does not exist and HF_TOKEN cannot create it (HTTP 404)" ;;
+    *) fail "HF_TOKEN has no write access to bucket $HUB_BUCKET (HTTP $code)" ;;
+  esac
   kubectl create secret generic hf-ci-token \
     --from-literal=token="$HF_TOKEN" \
     --dry-run=client -o yaml | kubectl apply -f -

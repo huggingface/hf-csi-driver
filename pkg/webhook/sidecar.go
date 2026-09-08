@@ -71,6 +71,10 @@ func injectSidecar(pod *corev1.Pod, config Config, volumeCount int, resources dr
 	sidecarEnv := []corev1.EnvVar{
 		{Name: "HOME", Value: "/tmp"},
 		{Name: "HF_CSI_TERMINATION_GRACE_SECONDS", Value: fmt.Sprintf("%d", graceSeconds)},
+		// glibc defaults to 8*nproc malloc arenas; fragmented arena pages never
+		// return to the kernel, so long-lived sidecars creep toward their memory
+		// limit and get OOM-killed (see hf-mount#135 for prod measurements).
+		{Name: "MALLOC_ARENA_MAX", Value: "2"},
 	}
 	if config.SidecarLogFormat != "" {
 		sidecarEnv = append(sidecarEnv, corev1.EnvVar{Name: "RUST_LOG_FORMAT", Value: config.SidecarLogFormat})

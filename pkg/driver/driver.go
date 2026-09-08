@@ -75,9 +75,8 @@ func (d *Driver) Run() error {
 		return fmt.Errorf("failed to create socket directory: %w", err)
 	}
 
-	// Start the pod watcher early. client-go's reflector retries the initial
-	// list internally on transient errors, so it does not block startup if
-	// the pod network is not yet ready.
+	// Start the pod watcher early. Start returns before the informer cache has
+	// synced, so an unreachable API server does not delay opening the socket.
 	d.mounter.Start(d.stopCh)
 
 	// Run mount recovery asynchronously. On a freshly-provisioned node the

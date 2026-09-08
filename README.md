@@ -275,6 +275,18 @@ volumeAttributes:
   mountFlags: "advanced-writes,uid=1000"
 ```
 
+Without an `fsGroup` or `uid`, the mount is owned by the sidecar user (65534) and
+remote entries are reported `0755`/`0644`, so only root can write. When the
+container user is not known up front (arbitrary images), make remote entries
+world-writable instead (hf-mount >= v0.10.0):
+
+```yaml
+volumeAttributes:
+  sourceType: bucket
+  sourceId: username/my-bucket
+  mountFlags: "advanced-writes,dir-mode=0777,file-mode=0666"
+```
+
 ## Building
 
 ```bash
@@ -287,6 +299,25 @@ make build
 # Tests
 make test
 ```
+
+## Startup taint (fresh nodes)
+
+On a freshly-launched node the driver registers with kubelet 35–80 s after the node becomes
+schedulable; any pod with an HF volume scheduled in that window gets `FailedMount: driver name
+hf.csi.huggingface.co not found`. To close the window, taint nodes at registration and let the
+driver lift the taint once it is ready (the same pattern as `ebs.csi.aws.com/agent-not-ready`):
+
+1. Have node bootstrap add `hf.csi.huggingface.co/agent-not-ready:NoSchedule` — kubelet
+   `registerWithTaints` in the kubelet configuration, or your node provisioner's template taints.
+2. Install the chart with `--set startupTaint.enabled=true` (key configurable via
+   `startupTaint.key`). This passes `--startup-taint-key` to the node plugin and grants it
+   `csinodes get` + `nodes get/patch`.
+
+The plugin polls its own `CSINode` entry and removes the taint only after kubelet lists the
+driver, so a `NodePublishVolume` on that node is guaranteed to reach a live driver. Polling is
+every 2s with a 3s per-request deadline, so the taint lifts within a few seconds of registration
+even when the plugin comes up before node networking does. The DaemonSet itself tolerates every
+taint, so it still schedules onto tainted nodes.
 
 ## Node-layer hardening
 

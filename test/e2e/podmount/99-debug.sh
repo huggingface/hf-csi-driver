@@ -25,6 +25,12 @@ for mp in $(kubectl get pods -l hf.csi.huggingface.co/app=hf-mount -o name 2>/de
   kubectl logs "$mp" --tail=200 2>/dev/null
   kubectl logs "$mp" --previous --tail=200 2>/dev/null
 done
+echo "=== Collected mount pod logs (snapshots surviving pod deletion) ==="
+for f in "${MOUNT_LOG_DIR:-/tmp/hf-mount-logs}"/*.log; do
+  [[ -f $f ]] || continue
+  echo "--- $f ---"
+  tail -n 200 "$f"
+done
 echo "=== HFMount CRDs ==="
 kubectl get hfmounts -o yaml 2>/dev/null
 exit 0

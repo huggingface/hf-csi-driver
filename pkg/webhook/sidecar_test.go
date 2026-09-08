@@ -257,6 +257,7 @@ func TestInjectSidecar_PassesRaisedGraceToSidecar(t *testing.T) {
 	}
 	if sc == nil {
 		t.Fatalf("sidecar container %q was not injected", SidecarContainerName)
+		return
 	}
 
 	graceEnv, found := "", false
@@ -287,6 +288,7 @@ func TestInjectSidecar_PassesLogFormatToSidecar(t *testing.T) {
 	}
 	if sc == nil {
 		t.Fatalf("sidecar container %q was not injected", SidecarContainerName)
+		return
 	}
 
 	for _, e := range sc.Env {

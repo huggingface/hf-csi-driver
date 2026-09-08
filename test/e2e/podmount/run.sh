@@ -21,6 +21,10 @@ else
   echo "[podmount] HF_TOKEN not set, skipping bucket-rw and fsgroup tests" >&2
 fi
 
+MOUNT_LOG_DIR=${MOUNT_LOG_DIR:-/tmp/hf-mount-logs}
+"$SCRIPT_DIR/../collect-mount-logs.sh" "$MOUNT_LOG_DIR" &
+COLLECTOR_PID=$!
+trap 'kill "$COLLECTOR_PID" 2>/dev/null' EXIT
 trap '$SCRIPT_DIR/99-debug.sh' ERR
 
 for t in "${TESTS[@]}"; do
