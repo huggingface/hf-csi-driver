@@ -31,3 +31,24 @@ spec:
     requests:
       storage: 1Ti
   volumeName: hf-bucket-pv
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hf-bucket-consumer
+spec:
+  containers:
+    - name: app
+      image: python:3.12
+      command: ["python", "-c", "import os; print(os.listdir('/data'))"]
+      volumeMounts:
+        - name: hf-data
+          mountPath: /data
+          # Lets a repaired FUSE mount (after mount pod crash/OOM recovery)
+          # propagate into this running container instead of leaving it with
+          # a dead mount (ENOTCONN) until the pod is recreated.
+          mountPropagation: HostToContainer
+  volumes:
+    - name: hf-data
+      persistentVolumeClaim:
+        claimName: hf-bucket-pvc
