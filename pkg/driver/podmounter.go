@@ -494,8 +494,16 @@ func (m *PodMounter) dropDeadPodRefs(refs []string) []string {
 }
 
 // listLivePodUIDsOnNode returns the set of UIDs of pods currently scheduled
-// on this node. Shared by the stale-workload cleaner and the orphan-bind
-// check so a single cleanup tick pays one List instead of one per site.
+// on this node that can still use a volume. Shared by the stale-workload
+// cleaner and the orphan-bind check so a single cleanup tick pays one List
+// instead of one per site.
+//
+// Pods in a terminal phase are excluded: a Failed or Succeeded pod never
+// touches its volumes again, but its object can outlive it for hours (Job
+// retention). Counting it as live would keep a retained mount pod (see
+// errWaitTimeout) alive for as long as the object exists when the workload
+// failed before its target was ever bound, since that NodeUnpublishVolume
+// finds nothing mounted and never reaches the mounter.
 func (m *PodMounter) listLivePodUIDsOnNode(ctx context.Context) (map[string]bool, error) {
 	list, err := m.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
 		FieldSelector: "spec.nodeName=" + m.nodeID,
@@ -504,8 +512,11 @@ func (m *PodMounter) listLivePodUIDsOnNode(ctx context.Context) (map[string]bool
 		return nil, err
 	}
 	uids := make(map[string]bool, len(list.Items))
-	for _, p := range list.Items {
-		uids[string(p.UID)] = true
+	for i := range list.Items {
+		if isPodTerminal(&list.Items[i]) {
+			continue
+		}
+		uids[string(list.Items[i].UID)] = true
 	}
 	return uids, nil
 }
