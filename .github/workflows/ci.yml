@@ -5,8 +5,12 @@ on:
   push:
     branches: [main]
 
+permissions: {}
+
 jobs:
   lint:
+    permissions:
+      contents: read
     name: Lint
     runs-on:
       group: aws-general-8-plus
@@ -20,6 +24,8 @@ jobs:
           version: latest
 
   test:
+    permissions:
+      contents: read
     name: Test
     runs-on:
       group: aws-general-8-plus
@@ -31,6 +37,8 @@ jobs:
       - run: go test -race -v ./...
 
   build:
+    permissions:
+      contents: read
     name: Build
     runs-on:
       group: aws-general-8-plus
@@ -42,6 +50,8 @@ jobs:
       - run: CGO_ENABLED=0 GOOS=linux go build -o /dev/null ./cmd/hf-csi-driver/
 
   helm-lint:
+    permissions:
+      contents: read
     name: Helm Lint
     runs-on:
       group: aws-general-8-plus
@@ -53,6 +63,8 @@ jobs:
           helm lint deploy/helm/hf-csi-driver/ --set webhook.enabled=true
 
   build-hf-mount:
+    permissions:
+      contents: read
     name: Build hf-mount image
     runs-on:
       group: aws-general-8-plus
@@ -90,6 +102,8 @@ jobs:
           compression-level: 0
 
   e2e-podmount:
+    permissions:
+      contents: read
     name: E2E (podmount)
     needs: [build, helm-lint, build-hf-mount]
     runs-on:
@@ -170,6 +184,8 @@ jobs:
         run: test/e2e/podmount/99-debug.sh
 
   e2e-sidecar:
+    permissions:
+      contents: read
     name: E2E (sidecar)
     needs: [build, helm-lint, build-hf-mount]
     runs-on:
