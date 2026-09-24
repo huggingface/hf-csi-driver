@@ -3,17 +3,18 @@ name: Release
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  packages: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/huggingface/hf-csi-driver
   HELM_CHART: deploy/helm/hf-csi-driver
 
+permissions: {}
+
 jobs:
   release:
+    permissions:
+      contents: write
     name: Create Github release
     runs-on: ubuntu-22.04
     outputs:
@@ -30,6 +31,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
+    permissions:
+      contents: read
+      packages: write
     name: Build & Push Docker
     runs-on: ubuntu-22.04
     needs: release
@@ -54,6 +58,9 @@ jobs:
             ${{ env.IMAGE }}:latest
 
   helm:
+    permissions:
+      contents: read
+      packages: write
     name: Publish Helm Chart
     runs-on: ubuntu-22.04
     # Gate the chart publish on a successful image push: the chart pins
