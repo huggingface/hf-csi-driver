@@ -45,13 +45,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      # Builds into the local image store, which is the only place the Wiz CLI reads,
+      # scans, pushes only if the scan passes, then registers the pushed digest so
+      # cluster admission recognises the image. Both tags share one manifest and one
+      # digest, so the registration covers them together.
+      - uses: huggingface/wiz-image-action/build-push@v1
         with:
+          image: ${{ env.IMAGE }}:${{ needs.release.outputs.tag }}
+          extraTags: ${{ env.IMAGE }}:latest
           context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ needs.release.outputs.tag }}
-            ${{ env.IMAGE }}:latest
+          clientId: ${{ vars.WIZ_CLI_CLIENT_ID }}
+          clientSecret: ${{ secrets.WIZ_CLI_CLIENT_SECRET }}
 
   helm:
     name: Publish Helm Chart
