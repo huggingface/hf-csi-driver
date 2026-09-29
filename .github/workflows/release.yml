@@ -3,9 +3,7 @@ name: Release
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 
 env:
   REGISTRY: ghcr.io
@@ -14,6 +12,8 @@ env:
 
 jobs:
   release:
+    permissions:
+      contents: write
     name: Create Github release
     runs-on: ubuntu-22.04
     outputs:
@@ -30,6 +30,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
+    permissions:
+      contents: read
+      packages: write
     name: Build & Push Docker
     runs-on: ubuntu-22.04
     needs: release
@@ -49,7 +52,7 @@ jobs:
       # scans, pushes only if the scan passes, then registers the pushed digest so
       # cluster admission recognises the image. Both tags share one manifest and one
       # digest, so the registration covers them together.
-      - uses: huggingface/wiz-image-action/build-push@v1
+      - uses: huggingface/wiz-image-action/build-push@53a5b4af184193adf1773753f29b3f903445e31b # v1.3.0
         with:
           image: ${{ env.IMAGE }}:${{ needs.release.outputs.tag }}
           extraTags: ${{ env.IMAGE }}:latest
@@ -58,6 +61,9 @@ jobs:
           clientSecret: ${{ secrets.WIZ_CLI_CLIENT_SECRET }}
 
   helm:
+    permissions:
+      contents: read
+      packages: write
     name: Publish Helm Chart
     runs-on: ubuntu-22.04
     # Gate the chart publish on a successful image push: the chart pins
@@ -93,9 +99,16 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
       - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY: ${{ env.REGISTRY }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GITHUB_TOKEN" | helm registry login "$REGISTRY" -u "$ACTOR" --password-stdin
 
       - name: Package and push
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          REGISTRY: ${{ env.REGISTRY }}
         run: |
-          helm package ${HELM_CHART} --version ${{ needs.release.outputs.version }} --app-version ${{ needs.release.outputs.version }}
-          helm push hf-csi-driver-${{ needs.release.outputs.version }}.tgz oci://${{ env.REGISTRY }}/huggingface/charts
+          helm package "${HELM_CHART}" --version "${VERSION}" --app-version "${VERSION}"
+          helm push "hf-csi-driver-${VERSION}.tgz" "oci://${REGISTRY}/huggingface/charts"
