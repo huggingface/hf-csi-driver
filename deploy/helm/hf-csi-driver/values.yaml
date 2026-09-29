@@ -14,6 +14,14 @@ hfMount:
     pullPolicy: IfNotPresent
   hostNetwork: true
   logFormat: ""
+  # Default memory request for the hf-mount container (mount pod or injected
+  # sidecar) when the volume sets no memoryRequest. Writable volumes reserve
+  # what the write pipeline can hold under a stalled upload (~1.8GiB measured);
+  # read-only volumes, including all repo sources, never touch it. Lower
+  # defaultMemoryRequest cluster-wide if the reservation does not fit your
+  # nodes; a request never caps usage.
+  defaultMemoryRequest: 2Gi
+  defaultMemoryRequestReadOnly: 128Mi
 
 logVerbosity: 4
 
