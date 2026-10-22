@@ -98,7 +98,7 @@ func TestSidecarMountWaitsForTmpfs(t *testing.T) {
 	if err := os.MkdirAll(sidecarEmptyDirPath(podUID), 0755); err != nil {
 		t.Fatal(err)
 	}
-	err := sidecarMount("model", "public/test", t.TempDir(), MountOptions{WorkloadPodUID: podUID}, volumeID)
+	err := sidecarMount("repo", "public/test", t.TempDir(), MountOptions{WorkloadPodUID: podUID}, volumeID)
 	if err == nil || !strings.Contains(err.Error(), "not mounted as tmpfs yet") {
 		t.Fatalf("expected retry before opening /dev/fuse, got %v", err)
 	}
@@ -145,7 +145,7 @@ func TestNodePublishSidecarMountInspectionFailure(t *testing.T) {
 	_, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
 		VolumeId: "test-volume", TargetPath: t.TempDir(),
 		VolumeCapability: &csi.VolumeCapability{AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}}},
-		VolumeContext:    map[string]string{volumeCtxSourceType: "model", volumeCtxSourceID: "public/test", volumeCtxPodUID: "test-pod"},
+		VolumeContext:    map[string]string{volumeCtxSourceType: "repo", volumeCtxSourceID: "public/test", volumeCtxPodUID: "test-pod"},
 	})
 	if status.Code(err) != codes.Internal || *unmounts != 0 || mock.isMountPointCalls != 0 {
 		t.Fatalf("inspection failure must stop publish without touching the mount: err=%v, unmounts=%d, stats=%d", err, *unmounts, mock.isMountPointCalls)
@@ -193,7 +193,7 @@ func TestNodePublishSidecarRecovery(t *testing.T) {
 			_, err := d.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
 				VolumeId: volumeID, TargetPath: target,
 				VolumeCapability: &csi.VolumeCapability{AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}}},
-				VolumeContext:    map[string]string{volumeCtxSourceType: "model", volumeCtxSourceID: "public/test", volumeCtxPodUID: podUID},
+				VolumeContext:    map[string]string{volumeCtxSourceType: "repo", volumeCtxSourceID: "public/test", volumeCtxPodUID: podUID},
 			})
 			wantRecovery := !tc.pending && (!tc.healthy || tc.handoffFailed)
 			if wantRecovery {
