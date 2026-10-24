@@ -38,14 +38,15 @@ type Driver struct {
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
 
-	endpoint      string
-	nodeID        string
-	cacheBase     string
-	srv           *grpc.Server
-	mounter       Mounter
-	fuseUnmountFn func(string) error
-	stopCh        chan struct{}
-	stopOnce      sync.Once
+	endpoint            string
+	nodeID              string
+	cacheBase           string
+	srv                 *grpc.Server
+	mounter             Mounter
+	fuseUnmountFn       func(string) error
+	sidecarMountStateFn func(string) (int, bool, error)
+	stopCh              chan struct{}
+	stopOnce            sync.Once
 }
 
 func NewDriver(endpoint, nodeID, cacheBase string, mounter Mounter) *Driver {

@@ -4,6 +4,7 @@ package driver
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/huggingface/hf-buckets-csi-driver/pkg/util"
 	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
+	mount "k8s.io/mount-utils"
 )
 
 const (
@@ -119,6 +121,43 @@ func sidecarEmptyDirPath(podUID string) string {
 	return filepath.Join(kubeletPodsBase, podUID, "volumes", "kubernetes.io~empty-dir", emptyDirName)
 }
 
+// sidecarMountInfo never stats the target: an unserved FUSE mount can block
+// stat indefinitely. An exact mount point is required, not an ancestor mount.
+func sidecarMountInfo(target string) (*mount.MountInfo, error) {
+	infos, err := mount.ParseMountInfo("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	for i := len(infos) - 1; i >= 0; i-- {
+		if unescapeMountPath(infos[i].MountPoint) == filepath.Clean(target) {
+			return &infos[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func sidecarMountState(target string) (int, bool, error) {
+	info, err := sidecarMountInfo(target)
+	if err != nil || info == nil {
+		return 0, false, err
+	}
+	if (info.FsType != "fuse" && info.FsType != "fuse.hf-mount") || info.Source != fuseMountSource {
+		return 0, false, fmt.Errorf("unexpected mount at %s: type %s, source %s", target, info.FsType, info.Source)
+	}
+	return info.Minor, true, nil
+}
+
+func requireSidecarTmpfs(tmpDir string) error {
+	info, err := sidecarMountInfo(tmpDir)
+	if err != nil {
+		return fmt.Errorf("check sidecar emptyDir mount: %w", err)
+	}
+	if info == nil || info.FsType != "tmpfs" {
+		return fmt.Errorf("sidecar emptyDir %s is not mounted as tmpfs yet; retry after kubelet prepares it", tmpDir)
+	}
+	return nil
+}
+
 // The handoff dir (<emptyDir>/.volumes/<hash>) is writable by the sidecar UID
 // (65534), so a tenant acting as that UID could swap a control file for a
 // symlink into the host (e.g. /proc/1/root/...) that this privileged hostPID
@@ -190,6 +229,12 @@ func readHandoffFile(dir, name string) ([]byte, error) {
 func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volumeName string) error {
 	podUID := opts.WorkloadPodUID
 	tmpDir := sidecarEmptyDirPath(podUID)
+	// Kubelet prepares volumes concurrently. Writing before the Memory
+	// emptyDir is mounted puts handoff files on disk, then hides them beneath
+	// tmpfs. Fail this publish so kubelet retries once the shared mount exists.
+	if err := requireSidecarTmpfs(tmpDir); err != nil {
+		return err
+	}
 
 	// --- Step 1: Open /dev/fuse and do the kernel mount ---
 
@@ -239,6 +284,13 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 	}
 	// The sidecar (user 65534) needs to write ready/error files here.
 	_ = os.Chown(volumeDir, 65534, 65534)
+	// A replacement handoff must not inherit a previous attempt's status.
+	for _, name := range []string{"ready", "error", "handoff-error"} {
+		if err := os.Remove(filepath.Join(volumeDir, name)); err != nil && !os.IsNotExist(err) {
+			cleanup()
+			return fmt.Errorf("clear sidecar %s: %w", name, err)
+		}
+	}
 
 	// Copy the token to the emptyDir so the sidecar can read it via --token-file.
 	// The emptyDir is tmpfs (medium: Memory) so the token never hits disk.
@@ -337,6 +389,16 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 			_ = os.Remove(symlinkPath)
 			klog.V(4).Infof("Removed socket symlink %s", symlinkPath)
 		}()
+		handoffSucceeded := false
+		defer func() {
+			if !handoffSucceeded {
+				// The sidecar cannot report an error if it never received the
+				// fd. Persist the driver's failure for the next republish.
+				if err := writeHandoffFile(volumeDir, "handoff-error", []byte("FUSE fd handoff failed"), 0644, false); err != nil {
+					klog.Warningf("Cannot record sidecar handoff failure: %v", err)
+				}
+			}
+		}()
 
 		_ = listener.(*net.UnixListener).SetDeadline(time.Now().Add(socketAcceptTimeout))
 
@@ -376,6 +438,7 @@ func sidecarMount(sourceType, sourceID, target string, opts MountOptions, volume
 		}
 
 		klog.Infof("Sent %d fd(s) (primary=%d) to sidecar for %s %s", len(fds), fd, sourceType, sourceID)
+		handoffSucceeded = true
 
 		// The sidecar now owns duplicates of every fd. Close our copies
 		// to avoid leaking N fds per volume on the CSI driver.
@@ -396,15 +459,29 @@ func checkSidecarHealth(podUID, volumeName string) error {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(volumeName)))[:12]
 	volumeDir := filepath.Join(tmpDir, ".volumes", hash)
 
-	data, err := readHandoffFile(volumeDir, "error")
+	// A missing optional error file is normal; a missing handoff directory
+	// is not. In particular, tmpfs may have covered files from an old driver
+	// that published before kubelet mounted the emptyDir.
+	info, err := os.Lstat(volumeDir)
 	if err != nil {
-		return nil // no error file (or a symlink that won't resolve) = treat as healthy
+		return fmt.Errorf("sidecar handoff directory unavailable: %w", err)
 	}
-	msg := strings.TrimSpace(string(data))
-	if msg == "" {
-		return nil
+	if !info.IsDir() {
+		return fmt.Errorf("sidecar handoff path is not a directory")
 	}
-	return fmt.Errorf("sidecar error: %s", msg)
+	for _, name := range []string{"handoff-error", "error"} {
+		data, err := readHandoffFile(volumeDir, name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read sidecar %s: %w", name, err)
+		}
+		if msg := strings.TrimSpace(string(data)); msg != "" {
+			return fmt.Errorf("sidecar %s: %s", name, msg)
+		}
+	}
+	return nil
 }
 
 // cleanupSidecarSocket removes the short symlink in /var/run/hf-csi/ created
