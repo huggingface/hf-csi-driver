@@ -8,9 +8,8 @@ hfMount:
   image:
     repository: ghcr.io/huggingface/hf-mount-fuse
     # Default for source installs; overwritten at release time with the latest hf-mount release tag.
-    # v0.9.1 adds the repo-revision allowlist (blocks shell/URL metacharacters
-    # reaching the mount args file) on top of prior fixes.
-    tag: v0.9.1
+    # v0.13.6 uploads xorbs through presigned S3 URLs (xet-core v1.8.0 Direct-S3).
+    tag: v0.13.6
     pullPolicy: IfNotPresent
   hostNetwork: true
   logFormat: ""
